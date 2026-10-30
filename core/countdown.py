@@ -10,6 +10,8 @@ def time_until_race(now: datetime | None = None) -> timedelta:
     """Return the absolute time remaining until the race starts."""
     if now is None:
         now = datetime.now(RACE_TIME_ZONE)
+    elif now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
 
     return RACE_START_TIME.astimezone(timezone.utc) - now.astimezone(timezone.utc)
 

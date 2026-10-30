@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+
+import pytest
+
 from core.countdown import time_until_race, format_countdown
 
 PRAGUE = ZoneInfo("Europe/Prague")
@@ -18,3 +21,7 @@ def test_format_days_and_hours():
 
 def test_format_after_start():
     assert format_countdown(timedelta(seconds=-1)) == "🏁"
+
+def test_rejects_naive_datetime():
+    with pytest.raises(ValueError, match="now must be timezone-aware"):
+        time_until_race(datetime(2027, 5, 1, 8, 0))
