@@ -50,3 +50,8 @@ def test_average_pace_is_weighted_by_distance():
 
 def test_average_pace_none_without_runs():
     assert average_pace([]) is None
+
+
+def test_average_pace_ignores_runs_without_distance():
+    runs = [act(date(2026, 11, 2), 10, 50), act(date(2026, 11, 3), 0, 30)]
+    assert average_pace(runs) == timedelta(minutes=5)
