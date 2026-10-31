@@ -49,6 +49,11 @@ def test_activity_rejects_negative_duration():
         )
 
 
+def test_rejects_run_with_zero_duration():
+    with pytest.raises(ValueError):
+        make_run(duration=timedelta(0))
+
+
 def test_activity_rejects_unknown_type():
     with pytest.raises(ValueError, match="unknown activity type"):
         Activity(

@@ -20,6 +20,8 @@ class Activity:
             raise ValueError("distance_km cannot be negative")
         if self.duration < timedelta(0):
             raise ValueError("duration cannot be negative")
+        if self.type in ("run", "bike") and self.duration == timedelta(0):
+            raise ValueError(f"{self.type} duration must be greater than zero")
         if self.type not in ACTIVITY_TYPES:
             raise ValueError(f"unknown activity type: {self.type}")
 
