@@ -44,7 +44,7 @@ class MainWindow(QMainWindow):
 
         self.countdown_timer = QTimer(self)
         self.countdown_timer.setInterval(60_000)
-        self.countdown_timer.timeout.connect(self._refresh_all)
+        self.countdown_timer.timeout.connect(self._on_timer)
         self.countdown_timer.start()
 
         form_layout = QFormLayout()
@@ -101,14 +101,19 @@ class MainWindow(QMainWindow):
 
         self.delete_button = QPushButton("Delete", self)
         self.delete_button.clicked.connect(self._delete_selected)
+        self.activity_table.itemSelectionChanged.connect(
+            self._update_delete_button
+        )
+        self.delete_button.setEnabled(False)
         layout.addWidget(self.delete_button)
 
         self.setCentralWidget(central_widget)
-        self._refresh_all()
-
-    def _refresh_all(self) -> None:
         self._refresh_countdown()
         self._reload()
+
+    def _on_timer(self) -> None:
+        self._refresh_countdown()
+        self._refresh_week_label(list(self._activities_by_id.values()))
 
     def _refresh_countdown(self) -> None:
         self.countdown_label.setText(
@@ -123,6 +128,8 @@ class MainWindow(QMainWindow):
             if activity.id is not None
         }
 
+        self.activity_table.setCurrentCell(-1, -1)
+        self.activity_table.clearSelection()
         self.activity_table.setRowCount(len(activities))
         for row, activity in enumerate(activities):
             items = [
@@ -136,8 +143,16 @@ class MainWindow(QMainWindow):
             if activity.id is not None:
                 items[0].setData(Qt.ItemDataRole.UserRole, activity.id)
             for column, item in enumerate(items):
+                if column in (2, 3, 4):
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight
+                        | Qt.AlignmentFlag.AlignVCenter
+                    )
                 self.activity_table.setItem(row, column, item)
 
+        self._refresh_week_label(activities)
+
+    def _refresh_week_label(self, activities: list[Activity]) -> None:
         week_km = km_in_week(activities, date.today())
         self.week_label.setText(f"This week: {week_km:.1f} km")
 
@@ -159,11 +174,18 @@ class MainWindow(QMainWindow):
         if self._editing_id is None:
             self.storage.add(activity)
         else:
-            self.storage.update(activity)
+            try:
+                self.storage.update(activity)
+            except LookupError as error:
+                QMessageBox.warning(self, "Can't update", str(error))
+                self._reset_form()
+                self._reload()
+                return
         self._reset_form()
         self._reload()
 
-    def _edit_row(self, row: int) -> None:
+    def _edit_row(self, row: int, _column: int = 0) -> None:
+        del _column
         first_item = self.activity_table.item(row, 0)
         if first_item is None:
             return
@@ -221,3 +243,6 @@ class MainWindow(QMainWindow):
         if self._editing_id == activity_id:
             self._reset_form()
         self._reload()
+
+    def _update_delete_button(self) -> None:
+        self.delete_button.setEnabled(self.activity_table.currentRow() >= 0)
