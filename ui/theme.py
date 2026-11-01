@@ -74,7 +74,7 @@ def build_stylesheet() -> str:
             color: {TEXT};
             background-color: {SURFACE_RAISED};
         }}
-        QLineEdit, QDateEdit, QTimeEdit, QDoubleSpinBox, QComboBox {{
+        QLineEdit, QDateEdit, QComboBox {{
             background-color: {SURFACE_RAISED};
             color: {TEXT};
             border: 1px solid {BORDER};
@@ -83,18 +83,17 @@ def build_stylesheet() -> str:
             padding: 0 10px;
             selection-background-color: {BLUE};
         }}
-        QLineEdit:focus, QDateEdit:focus, QTimeEdit:focus,
-        QDoubleSpinBox:focus, QComboBox:focus {{
+        QLineEdit:focus, QDateEdit:focus, QComboBox:focus {{
             border: 1px solid {ACCENT};
         }}
-        QComboBox::drop-down, QDateEdit::drop-down, QTimeEdit::drop-down {{
+        QComboBox::drop-down, QDateEdit::drop-down {{
             width: 30px;
             border: none;
             border-left: 1px solid {BORDER};
             subcontrol-origin: padding;
             subcontrol-position: top right;
         }}
-        QComboBox::down-arrow, QDateEdit::down-arrow, QTimeEdit::down-arrow {{
+        QComboBox::down-arrow, QDateEdit::down-arrow {{
             image: url("{_ARROW_ICON_PATH.as_posix()}");
             width: 12px;
             height: 8px;
@@ -106,27 +105,6 @@ def build_stylesheet() -> str:
             border: 1px solid {BORDER};
             selection-background-color: {BLUE};
             outline: none;
-        }}
-        QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
-            width: 18px;
-            border: none;
-            background-color: {SURFACE};
-        }}
-        QDoubleSpinBox::up-arrow {{
-            image: none;
-            width: 0;
-            height: 0;
-            border-left: 4px solid transparent;
-            border-right: 4px solid transparent;
-            border-bottom: 5px solid {ACCENT};
-        }}
-        QDoubleSpinBox::down-arrow {{
-            image: none;
-            width: 0;
-            height: 0;
-            border-left: 4px solid transparent;
-            border-right: 4px solid transparent;
-            border-top: 5px solid {ACCENT};
         }}
         QPushButton {{
             min-height: 36px;

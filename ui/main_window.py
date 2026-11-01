@@ -5,7 +5,7 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
-from PySide6.QtCore import QDate, QTime, QTimer, Qt
+from PySide6.QtCore import QDate, QLocale, QTime, QTimer, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -150,6 +150,8 @@ class MainWindow(QMainWindow):
         self.distance_spin = QDoubleSpinBox(self)
         self.distance_spin.setRange(0, 100)
         self.distance_spin.setSingleStep(0.1)
+        self.distance_spin.setLocale(QLocale.c())
+        self.distance_spin.setMinimumSize(120, 40)
         self.distance_spin.setButtonSymbols(
             QAbstractSpinBox.ButtonSymbols.NoButtons
         )
@@ -158,6 +160,7 @@ class MainWindow(QMainWindow):
         self.duration_edit = QTimeEdit(self)
         self.duration_edit.setDisplayFormat("H:mm:ss")
         self.duration_edit.setTime(QTime(0, 0))
+        self.duration_edit.setMinimumSize(140, 40)
         self.duration_edit.setButtonSymbols(
             QAbstractSpinBox.ButtonSymbols.NoButtons
         )
