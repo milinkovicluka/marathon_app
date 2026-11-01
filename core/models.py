@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Literal, get_args
@@ -16,6 +17,8 @@ class Activity:
     id: int | None = None
 
     def __post_init__(self) -> None:
+        if not math.isfinite(self.distance_km):
+            raise ValueError("distance_km must be finite")
         if self.distance_km < 0:
             raise ValueError("distance_km cannot be negative")
         if self.duration < timedelta(0):

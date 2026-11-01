@@ -57,6 +57,16 @@ def test_delete(store):
     store.delete(saved.id)
     assert store.list_activities() == []
 
+def test_delete_missing_activity_raises(store):
+    with pytest.raises(LookupError):
+        store.delete(999)
+
+def test_update_missing_activity_raises(store):
+    activity = make_run()
+    activity.id = 999
+    with pytest.raises(LookupError):
+        store.update(activity)
+
 def test_data_survives_reopen(tmp_path):
     Storage(tmp_path / "test.db").add(make_run())
     assert len(Storage(tmp_path / "test.db").list_activities()) == 1

@@ -5,8 +5,10 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter
 from PySide6.QtCore import QDate, QLocale, QTime, QTimer, Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -33,13 +35,36 @@ from core.countdown import format_countdown, time_until_race
 from core.formatting import format_duration, format_pace
 from core.models import ACTIVITY_TYPES, Activity
 from core.stats import (
+    average_pace,
     daily_km_series,
     km_in_week,
     linear_trend,
+    longest_run,
     weekly_km_series,
 )
 from core.storage import Storage
 from ui import theme
+
+
+def _format_day(day: date, *, with_weekday: bool = False) -> str:
+    prefix = f"{day:%a} " if with_weekday else ""
+    return f"{prefix}{day.day} {day:%b}"
+
+
+def _weekly_label_step(count: int) -> int:
+    if count > 32:
+        return 4
+    if count > 16:
+        return 2
+    return 1
+
+
+def _daily_tick_interval(monday_count: int) -> int:
+    if monday_count > 24:
+        return 4
+    if monday_count > 10:
+        return 2
+    return 1
 
 
 class MainWindow(QMainWindow):
@@ -100,11 +125,14 @@ class MainWindow(QMainWindow):
         self.trend_checkbox = QCheckBox("Trend line", progress_tab)
         self.trend_checkbox.toggled.connect(self._on_chart_controls_changed)
         chart_controls.addWidget(self.trend_checkbox)
+        chart_controls.addSpacing(16)
 
         today = date.today()
         default_start = today - timedelta(days=today.weekday(), weeks=11)
         self.chart_from_edit = QDateEdit(progress_tab)
         self.chart_from_edit.setCalendarPopup(True)
+        self.chart_from_edit.setDisplayFormat("d MMM yyyy")
+        self.chart_from_edit.setMinimumWidth(130)
         self.chart_from_edit.setDate(
             QDate(default_start.year, default_start.month, default_start.day)
         )
@@ -115,6 +143,8 @@ class MainWindow(QMainWindow):
 
         self.chart_to_edit = QDateEdit(progress_tab)
         self.chart_to_edit.setCalendarPopup(True)
+        self.chart_to_edit.setDisplayFormat("d MMM yyyy")
+        self.chart_to_edit.setMinimumWidth(130)
         self.chart_to_edit.setMinimumDate(self.chart_from_edit.date())
         self.chart_to_edit.setMaximumDate(QDate.currentDate())
         self.chart_to_edit.setDate(QDate(today.year, today.month, today.day))
@@ -138,7 +168,7 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
         self.date_edit = QDateEdit(QDate.currentDate(), self)
-        self.date_edit.setDisplayFormat("ddd dd MMM")
+        self.date_edit.setDisplayFormat("ddd d MMM")
         self.date_edit.setMaximumDate(QDate.currentDate())
         self.date_edit.setCalendarPopup(True)
         form_layout.addRow("Date", self.date_edit)
@@ -197,9 +227,10 @@ class MainWindow(QMainWindow):
         self.week_label = QLabel(summary_card)
         self.week_label.setObjectName("weekValue")
         summary_layout.addWidget(self.week_label)
-        summary_caption = QLabel("RUNNING DISTANCE", summary_card)
-        summary_caption.setObjectName("cardCaption")
-        summary_layout.addWidget(summary_caption)
+        self.week_details_label = QLabel(summary_card)
+        self.week_details_label.setObjectName("weekDetails")
+        self.week_details_label.setWordWrap(True)
+        summary_layout.addWidget(self.week_details_label)
         summary_layout.addStretch(1)
         cards_layout.addWidget(summary_card, 2)
         log_layout.addLayout(cards_layout)
@@ -215,9 +246,13 @@ class MainWindow(QMainWindow):
         self.activity_table.setEditTriggers(
             QTableWidget.EditTrigger.NoEditTriggers
         )
-        self.activity_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
+        self.activity_table.setAlternatingRowColors(True)
+        self.activity_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
         )
+        table_header = self.activity_table.horizontalHeader()
+        table_header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        table_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         for column in (2, 3, 4):
             header_item = self.activity_table.horizontalHeaderItem(column)
             if header_item is not None:
@@ -229,12 +264,17 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.activity_table)
 
         self.delete_button = QPushButton("Delete", self)
+        self.delete_button.setProperty("danger", True)
+        self.delete_button.setMinimumWidth(120)
         self.delete_button.clicked.connect(self._delete_selected)
         self.activity_table.itemSelectionChanged.connect(
             self._update_delete_button
         )
         self.delete_button.setEnabled(False)
-        log_layout.addWidget(self.delete_button)
+        delete_row = QHBoxLayout()
+        delete_row.addStretch(1)
+        delete_row.addWidget(self.delete_button)
+        log_layout.addLayout(delete_row)
 
         self.chart_figure = Figure(facecolor=theme.PLOT_BACKGROUND)
         self.chart_axes = self.chart_figure.add_subplot(
@@ -251,14 +291,23 @@ class MainWindow(QMainWindow):
 
     def _on_timer(self) -> None:
         self._refresh_countdown()
-        if date.today() != self._last_reload_date:
+        today = date.today()
+        if today != self._last_reload_date:
+            today_qdate = QDate(today.year, today.month, today.day)
+            self.date_edit.setMaximumDate(today_qdate)
+            self.chart_from_edit.setMaximumDate(today_qdate)
+            self.chart_to_edit.setMaximumDate(today_qdate)
+            if self.chart_to_edit.date().toPython() == self._last_reload_date:
+                self.chart_to_edit.setDate(today_qdate)
             self._reload()
             return
         self._refresh_week_label(list(self._activities_by_id.values()))
 
     def _refresh_countdown(self) -> None:
-        self.countdown_label.setText(
-            f"🏃 {format_countdown(time_until_race())}"
+        remaining = time_until_race()
+        self.countdown_label.setText(f"🏃 {format_countdown(remaining)}")
+        self.countdown_suffix_label.setText(
+            "to go" if remaining > timedelta(0) else ""
         )
 
     def _reload(self) -> None:
@@ -275,7 +324,9 @@ class MainWindow(QMainWindow):
         self.activity_table.setRowCount(len(activities))
         for row, activity in enumerate(activities):
             items = [
-                QTableWidgetItem(activity.date.strftime("%a %d %b")),
+                QTableWidgetItem(
+                    _format_day(activity.date, with_weekday=True)
+                ),
                 QTableWidgetItem(activity.type),
                 QTableWidgetItem(f"{activity.distance_km:.1f} km"),
                 QTableWidgetItem(format_duration(activity.duration)),
@@ -296,8 +347,27 @@ class MainWindow(QMainWindow):
         self._refresh_chart(activities)
 
     def _refresh_week_label(self, activities: list[Activity]) -> None:
-        week_km = km_in_week(activities, date.today())
+        today = date.today()
+        monday = today - timedelta(days=today.weekday())
+        runs_this_week = [
+            activity
+            for activity in activities
+            if activity.type == "run"
+            and monday <= activity.date <= monday + timedelta(days=6)
+        ]
+        week_km = km_in_week(activities, today)
         self.week_label.setText(f"{week_km:.1f} km")
+        longest = longest_run(runs_this_week)
+        longest_text = (
+            f"{longest.distance_km:.1f} km" if longest is not None else "n/a"
+        )
+        average_pace_text = format_pace(average_pace(runs_this_week))
+        run_count = len(runs_this_week)
+        run_word = "run" if run_count == 1 else "runs"
+        self.week_details_label.setText(
+            f"{run_count} {run_word} · longest {longest_text} · "
+            f"avg {average_pace_text}"
+        )
 
     def _refresh_chart(self, activities: list[Activity]) -> None:
         self.chart_axes.clear()
@@ -305,23 +375,34 @@ class MainWindow(QMainWindow):
 
         start = self.chart_from_edit.date().toPython()
         end = self.chart_to_edit.date().toPython()
+        today = date.today()
+        current_monday = today - timedelta(days=today.weekday())
         weekly = self.chart_granularity.currentText() == "By week"
         positions: list[int] = []
         if weekly:
-            series = weekly_km_series(activities, start, end)
+            chart_activities = [
+                activity
+                for activity in activities
+                if start <= activity.date <= end
+            ]
+            series = weekly_km_series(chart_activities, start, end)
             dates = [monday for monday, _ in series]
             values = [km for _, km in series]
             positions = list(range(len(series)))
             bar_x: list[int] | list[date] = positions
             bar_width = 0.7
-            title = "Weekly distance"
+            kind = "Weekly"
         else:
             series = daily_km_series(activities, start, end)
             dates = [day for day, _ in series]
             values = [km for _, km in series]
             bar_x = dates
             bar_width = 0.8
-            title = "Daily distance"
+            kind = "Daily"
+        title = (
+            f"{kind} distance · {_format_day(start)} – {_format_day(end)} · "
+            f"{sum(values):.0f} km"
+        )
 
         bars = self.chart_axes.bar(
             bar_x,
@@ -330,30 +411,57 @@ class MainWindow(QMainWindow):
             color=theme.ACCENT,
         )
         if weekly or (end - start).days < 31:
+            labels: list[str] = []
+            for day, value in zip(dates, values):
+                if value <= 0:
+                    labels.append("")
+                elif weekly and day == current_monday and end >= today:
+                    labels.append(f"{value:g} · so far")
+                else:
+                    labels.append(f"{value:g}")
             self.chart_axes.bar_label(
                 bars,
-                labels=[f"{value:g}" if value > 0 else "" for value in values],
+                labels=labels,
                 padding=4,
                 color=theme.TEXT,
                 fontsize=9,
             )
+
         trend_x: list[int] | list[date] = []
         trend_values: list[float] = []
         if self.trend_checkbox.isChecked():
+            note: str | None = None
             if weekly:
-                current_monday = date.today() - timedelta(days=date.today().weekday())
                 complete_week_indexes = [
                     index
                     for index, day in enumerate(dates)
-                    if day < current_monday
+                    if start <= day
+                    and day + timedelta(days=6) <= end
+                    and day < current_monday
                 ]
-                trend_values = linear_trend(
-                    [values[index] for index in complete_week_indexes]
-                )
-                trend_x = [positions[index] for index in complete_week_indexes]
+                trend_input = [
+                    values[index] for index in complete_week_indexes
+                ]
+                if len(trend_input) >= 2 and any(
+                    value > 0 for value in trend_input
+                ):
+                    trend_values = linear_trend(trend_input)
+                    trend_x = [
+                        positions[index]
+                        for index in complete_week_indexes
+                    ]
+                elif len(trend_input) < 2:
+                    note = "Trend needs 2 complete weeks"
+                else:
+                    note = "No completed distance yet"
             else:
-                trend_values = linear_trend(values)
-                trend_x = dates
+                if len(values) >= 2 and any(value > 0 for value in values):
+                    trend_values = linear_trend(values)
+                    trend_x = dates
+                elif len(values) < 2:
+                    note = "Trend needs 2 days"
+                else:
+                    note = "No distance to trend yet"
 
             if trend_values:
                 for width in range(4, 20, 2):
@@ -381,11 +489,25 @@ class MainWindow(QMainWindow):
                     edgecolor=theme.BORDER,
                     labelcolor=theme.TEXT,
                 )
+            elif note is not None:
+                self.chart_axes.text(
+                    0.98,
+                    0.95,
+                    note,
+                    transform=self.chart_axes.transAxes,
+                    ha="right",
+                    va="top",
+                    color=theme.MUTED_TEXT,
+                    fontsize=9,
+                )
 
         if weekly:
-            x_limits = (-0.5, max(len(series), 4) - 0.5)
+            x_limits = (-0.5, max(len(series), 8) - 0.5)
         else:
-            x_limits = self.chart_axes.get_xlim()
+            x_limits = (
+                mdates.date2num(start) - 0.5,
+                mdates.date2num(end) + 0.5,
+            )
         top = max(10, max(values, default=0) * 1.15)
         if trend_values:
             top = max(top, max(trend_values) * 1.15)
@@ -395,6 +517,10 @@ class MainWindow(QMainWindow):
             [theme.ACCENT, theme.BAR_GLOSS],
         )
         for index, bar in enumerate(bars):
+            in_progress = weekly and dates[index] == current_monday
+            if in_progress:
+                bar.set_edgecolor(theme.ACCENT)
+                bar.set_linestyle("--")
             if bar.get_height() <= 0:
                 continue
             x, y = bar.get_xy()
@@ -408,26 +534,34 @@ class MainWindow(QMainWindow):
                 zorder=bar.get_zorder(),
             )
             image.set_clip_path(bar)
-            if (
-                weekly
-                and index == len(bars) - 1
-                and dates[index] <= date.today() <= dates[index] + timedelta(days=6)
-            ):
-                image.set_alpha(0.4)
             bar.set_facecolor("none")
         self.chart_axes.set_xlim(x_limits)
         self.chart_axes.set_ylim(0, top)
 
         if weekly:
+            label_step = _weekly_label_step(len(dates))
+            tick_positions = positions[::label_step]
             self.chart_axes.set_xticks(
-                positions,
-                [day.strftime("%d %b") for day in dates],
+                tick_positions,
+                [_format_day(dates[index]) for index in tick_positions],
             )
         else:
-            locator = mdates.AutoDateLocator()
-            self.chart_axes.xaxis.set_major_locator(locator)
+            monday_count = sum(1 for day in dates if day.weekday() == 0)
+            if monday_count:
+                self.chart_axes.xaxis.set_major_locator(
+                    mdates.WeekdayLocator(
+                        byweekday=mdates.MO,
+                        interval=_daily_tick_interval(monday_count),
+                    )
+                )
+            else:
+                self.chart_axes.xaxis.set_major_locator(mdates.DayLocator())
             self.chart_axes.xaxis.set_major_formatter(
-                mdates.ConciseDateFormatter(locator)
+                FuncFormatter(
+                    lambda value, _position: _format_day(
+                        mdates.num2date(value).date()
+                    )
+                )
             )
         self._style_axes(title, "Kilometers", rotate_x_labels=not weekly)
 
@@ -452,14 +586,11 @@ class MainWindow(QMainWindow):
     ) -> None:
         self.chart_axes.set_title(title, color=theme.TEXT)
         self.chart_axes.set_ylabel(ylabel, color=theme.TEXT)
-        if rotate_x_labels:
-            self.chart_axes.tick_params(
-                axis="x",
-                colors=theme.MUTED_TEXT,
-                rotation=45,
-            )
-        else:
-            self.chart_axes.tick_params(axis="x", colors=theme.MUTED_TEXT)
+        self.chart_axes.tick_params(
+            axis="x",
+            colors=theme.MUTED_TEXT,
+            rotation=45 if rotate_x_labels else 0,
+        )
         self.chart_axes.tick_params(axis="y", colors=theme.MUTED_TEXT)
         self.chart_axes.grid(axis="y", color=theme.GRID, alpha=0.5)
         self.chart_axes.set_axisbelow(True)
@@ -550,7 +681,14 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        self.storage.delete(activity_id)
+        try:
+            self.storage.delete(activity_id)
+        except LookupError as error:
+            QMessageBox.warning(self, "Can't delete", str(error))
+            if self._editing_id == activity_id:
+                self._reset_form()
+            self._reload()
+            return
         if self._editing_id == activity_id:
             self._reset_form()
         self._reload()

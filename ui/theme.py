@@ -3,21 +3,22 @@ import tempfile
 from pathlib import Path
 
 BACKGROUND = "#12141C"
-SURFACE = "#1A1D29"
-SURFACE_RAISED = "#202432"
+SURFACE = "#1B1F2B"
+SURFACE_RAISED = "#252A38"
 TEXT = "#E6E8EF"
-MUTED_TEXT = "#9AA3B5"
+MUTED_TEXT = "#8A90A2"
 BORDER = "#303647"
-GRID = "#353B4C"
+GRID = "#2E3445"
 ACCENT = "#00E5FF"
 ACCENT_HOVER = "#33EEFF"
 ACCENT_PRESSED = "#00B8CC"
 BLUE = "#2979FF"
 BLUE_HOVER = "#5595FF"
 BLUE_PRESSED = "#1E5FCC"
-TREND = "#FFB74D"
+TREND = "#FF4ECD"
+DANGER = "#FF5370"
 BAR_GLOSS = "#7DF5FF"
-PLOT_BACKGROUND = "#171A24"
+PLOT_BACKGROUND = SURFACE
 
 
 def _create_arrow_icon() -> Path:
@@ -35,8 +36,27 @@ def _create_arrow_icon() -> Path:
         return Path(icon_file.name)
 
 
+def _create_check_icon() -> Path:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".svg",
+        prefix="marathon-check-",
+        encoding="utf-8",
+        delete=False,
+    ) as icon_file:
+        icon_file.write(
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+            f'<path d="M3 8l3.2 3.2L13 4.5" fill="none" stroke="{ACCENT}" '
+            f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+            f"</svg>"
+        )
+        return Path(icon_file.name)
+
+
 _ARROW_ICON_PATH = _create_arrow_icon()
+_CHECK_ICON_PATH = _create_check_icon()
 atexit.register(_ARROW_ICON_PATH.unlink, missing_ok=True)
+atexit.register(_CHECK_ICON_PATH.unlink, missing_ok=True)
 
 
 def build_stylesheet() -> str:
@@ -74,7 +94,7 @@ def build_stylesheet() -> str:
             color: {TEXT};
             background-color: {SURFACE_RAISED};
         }}
-        QLineEdit, QDateEdit, QComboBox {{
+        QLineEdit, QDateEdit, QTimeEdit, QDoubleSpinBox, QComboBox {{
             background-color: {SURFACE_RAISED};
             color: {TEXT};
             border: 1px solid {BORDER};
@@ -83,8 +103,16 @@ def build_stylesheet() -> str:
             padding: 0 10px;
             selection-background-color: {BLUE};
         }}
-        QLineEdit:focus, QDateEdit:focus, QComboBox:focus {{
+        QLineEdit:focus, QDateEdit:focus, QTimeEdit:focus,
+        QDoubleSpinBox:focus, QComboBox:focus {{
             border: 1px solid {ACCENT};
+        }}
+        QDoubleSpinBox::up-button, QDoubleSpinBox::down-button,
+        QTimeEdit::up-button, QTimeEdit::down-button {{
+            subcontrol-origin: border;
+            width: 0;
+            height: 0;
+            border: none;
         }}
         QComboBox::drop-down, QDateEdit::drop-down {{
             width: 30px;
@@ -129,7 +157,9 @@ def build_stylesheet() -> str:
             background-color: {SURFACE};
         }}
         QPushButton[primary="true"] {{
+            min-height: 40px;
             border: none;
+            border-radius: 20px;
             color: {BACKGROUND};
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                                         stop:0 {ACCENT}, stop:1 {BLUE});
@@ -142,6 +172,20 @@ def build_stylesheet() -> str:
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                                         stop:0 {ACCENT_PRESSED},
                                         stop:1 {BLUE_PRESSED});
+        }}
+        QPushButton[danger="true"] {{
+            color: {DANGER};
+            border-color: {DANGER};
+        }}
+        QPushButton[danger="true"]:hover {{
+            color: {BACKGROUND};
+            background-color: {DANGER};
+            border-color: {DANGER};
+        }}
+        QPushButton[danger="true"]:disabled {{
+            color: {MUTED_TEXT};
+            border-color: {BORDER};
+            background-color: {SURFACE};
         }}
         QCheckBox {{
             spacing: 8px;
@@ -157,13 +201,14 @@ def build_stylesheet() -> str:
         }}
         QCheckBox::indicator:checked {{
             border-color: {ACCENT};
-            background-color: {ACCENT};
+            background-color: {SURFACE_RAISED};
+            image: url("{_CHECK_ICON_PATH.as_posix()}");
         }}
         QTableWidget {{
             background-color: {SURFACE};
             alternate-background-color: {SURFACE_RAISED};
             color: {TEXT};
-            gridline-color: {BORDER};
+            gridline-color: {GRID};
             border: 1px solid {BORDER};
             border-radius: 8px;
             selection-background-color: {BLUE};
@@ -212,6 +257,10 @@ def build_stylesheet() -> str:
             color: {ACCENT};
             font-size: 28px;
             font-weight: 700;
+        }}
+        QLabel#weekDetails {{
+            color: {MUTED_TEXT};
+            font-size: 12px;
         }}
         QLabel#countdownSuffix {{
             color: {MUTED_TEXT};
