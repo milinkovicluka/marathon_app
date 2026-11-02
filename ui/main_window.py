@@ -435,6 +435,7 @@ class MainWindow(QMainWindow):
             if self._progress_period_offset == 0
             else period_end
         )
+        current_period_is_incomplete = self._progress_period_offset == 0
         self.period_range_label.setText(_format_date_range(start, end))
         self.period_back_button.setEnabled(True)
         self.period_forward_button.setEnabled(self._progress_period_offset < 0)
@@ -501,8 +502,8 @@ class MainWindow(QMainWindow):
 
         x_positions = list(range(len(bucket_starts)))
         self.chart_axes.plot(
-            x_positions,
-            values,
+            x_positions[:-1] if current_period_is_incomplete else x_positions,
+            values[:-1] if current_period_is_incomplete else values,
             color=theme.BLUE,
             linewidth=2.5,
             marker="o",
@@ -511,6 +512,26 @@ class MainWindow(QMainWindow):
             markeredgecolor=theme.PLOT_BACKGROUND,
             markeredgewidth=1.5,
         )
+        if current_period_is_incomplete and x_positions:
+            if len(x_positions) > 1:
+                self.chart_axes.plot(
+                    x_positions[-2:],
+                    values[-2:],
+                    color=theme.BLUE,
+                    linewidth=2.5,
+                    linestyle="--",
+                )
+            self.chart_axes.plot(
+                [x_positions[-1]],
+                [values[-1]],
+                color=theme.BLUE,
+                marker="o",
+                markersize=7,
+                markerfacecolor="none",
+                markeredgecolor=theme.BLUE,
+                markeredgewidth=1.5,
+                linestyle="None",
+            )
         self.chart_axes.set_xticks(x_positions, labels)
         self.chart_axes.set_xlim(-0.5, len(x_positions) - 0.5)
         self.chart_axes.set_ylim(0, max(1, max(values, default=0) * 1.15))

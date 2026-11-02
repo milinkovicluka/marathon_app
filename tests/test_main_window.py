@@ -101,7 +101,8 @@ def test_period_button_resets_navigation_to_current_period(
     assert window._progress_period_offset == 0
     assert window.period_range_label.text() == "5 Oct–1 Nov 2026"
     assert not window.period_forward_button.isEnabled()
-    assert len(window.chart_axes.lines[0].get_ydata()) == 4
+    assert len(window.chart_axes.lines[0].get_ydata()) == 3
+    assert list(window.chart_axes.lines[1].get_ydata()) == [0, 0]
 
 
 def test_metric_and_activity_filter_update_graph_values(
@@ -128,37 +129,23 @@ def test_metric_and_activity_filter_update_graph_values(
     window._reload()
     window.chart_activity_filter.setCurrentText("Run")
 
-    assert list(window.chart_axes.lines[0].get_ydata()) == [
-        1,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    ]
+    assert list(window.chart_axes.lines[0].get_ydata()) == [1, 0, 0, 0, 0, 0]
+    assert list(window.chart_axes.lines[1].get_ydata()) == [0, 0]
 
     window.chart_metric.setCurrentText("Kilometers")
-    assert list(window.chart_axes.lines[0].get_ydata()) == [
-        5,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    ]
+    assert list(window.chart_axes.lines[0].get_ydata()) == [5, 0, 0, 0, 0, 0]
+    assert list(window.chart_axes.lines[1].get_ydata()) == [0, 0]
     assert window.chart_axes.get_ylabel() == "Kilometers"
 
     window.chart_metric.setCurrentText("Time")
     assert list(window.chart_axes.lines[0].get_ydata()) == pytest.approx(
-        [25 / 60, 0, 0, 0, 0, 0, 0]
+        [25 / 60, 0, 0, 0, 0, 0]
     )
     assert window.chart_axes.get_ylabel() == "Hours"
 
     window.chart_activity_filter.setCurrentText("Bike")
     assert list(window.chart_axes.lines[0].get_ydata()) == pytest.approx(
-        [0, 0, 0.5, 0, 0, 0, 0]
+        [0, 0, 0.5, 0, 0, 0]
     )
 
 
@@ -177,7 +164,9 @@ def test_four_weeks_aggregates_activities_by_week(window, monkeypatch):
     window.period_buttons["4 Weeks"].click()
     window.chart_metric.setCurrentText("Kilometers")
 
-    assert list(window.chart_axes.lines[0].get_ydata()) == [3, 4, 0, 5]
+    assert list(window.chart_axes.lines[0].get_ydata()) == [3, 4, 0]
+    assert list(window.chart_axes.lines[1].get_ydata()) == [0, 5]
+    assert window.chart_axes.lines[1].get_linestyle() == "--"
     assert [tick.get_text() for tick in window.chart_axes.get_xticklabels()] == [
         "5 Oct",
         "12 Oct",
@@ -191,7 +180,9 @@ def test_month_periods_use_monthly_points(window, monkeypatch):
     window.period_buttons["6 Months"].click()
 
     assert window.period_range_label.text() == "1 Jun–1 Nov 2026"
-    assert len(window.chart_axes.lines[0].get_ydata()) == 6
+    assert len(window.chart_axes.lines[0].get_ydata()) == 5
+    assert len(window.chart_axes.lines[1].get_ydata()) == 2
+    assert len(window.chart_axes.get_xticklabels()) == 6
     assert [tick.get_text() for tick in window.chart_axes.get_xticklabels()] == [
         "Jun",
         "Jul",
@@ -203,7 +194,43 @@ def test_month_periods_use_monthly_points(window, monkeypatch):
 
     window.period_buttons["1 Year"].click()
     assert window.period_range_label.text() == "1 Dec 2025–1 Nov 2026"
-    assert len(window.chart_axes.lines[0].get_ydata()) == 12
+    assert len(window.chart_axes.lines[0].get_ydata()) == 11
+    assert len(window.chart_axes.lines[1].get_ydata()) == 2
+    assert len(window.chart_axes.get_xticklabels()) == 12
+
+
+def test_current_month_uses_dashed_segment_and_hollow_endpoint(
+    window,
+    monkeypatch,
+):
+    _fixed_today(monkeypatch)
+    window.storage.add(
+        Activity(
+            date=date(2026, 10, 15),
+            type="run",
+            distance_km=215,
+            duration=timedelta(hours=15),
+        )
+    )
+    window.storage.add(
+        Activity(
+            date=date(2026, 11, 1),
+            type="run",
+            distance_km=15,
+            duration=timedelta(hours=1),
+        )
+    )
+    window._reload()
+    window.period_buttons["6 Months"].click()
+    window.chart_metric.setCurrentText("Kilometers")
+
+    solid_line, partial_segment, partial_endpoint = window.chart_axes.lines
+
+    assert list(solid_line.get_ydata()) == [0, 0, 0, 0, 215]
+    assert list(partial_segment.get_ydata()) == [215, 15]
+    assert partial_segment.get_linestyle() == "--"
+    assert list(partial_endpoint.get_ydata()) == [15]
+    assert partial_endpoint.get_markerfacecolor() == "none"
 
 
 def test_calendar_dims_dates_outside_shown_month_and_highlights_weekends(window):
