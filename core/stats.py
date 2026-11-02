@@ -1,6 +1,10 @@
 from datetime import date, timedelta
+from typing import Literal
 
-from core.models import Activity
+from core.models import ACTIVITY_TYPES, Activity, ActivityType
+
+ProgressPeriod = Literal["7 Days", "4 Weeks", "6 Months", "1 Year"]
+ProgressMetric = Literal["Activities", "Kilometers", "Time"]
 
 
 def _runs(activities: list[Activity]) -> list[Activity]:
@@ -16,17 +20,6 @@ def _runs_in_week(activities: list[Activity], monday: date) -> list[Activity]:
     ]
 
 
-def _week_mondays(start: date, end: date) -> list[date]:
-    if start > end:
-        return []
-    first_monday = start - timedelta(days=start.weekday())
-    last_monday = end - timedelta(days=end.weekday())
-    return [
-        first_monday + timedelta(weeks=week_offset)
-        for week_offset in range((last_monday - first_monday).days // 7 + 1)
-    ]
-
-
 def km_in_week(activities: list[Activity], day: date) -> float:
     monday = day - timedelta(days=day.weekday())
     return sum(
@@ -35,57 +28,88 @@ def km_in_week(activities: list[Activity], day: date) -> float:
     )
 
 
-def weekly_km_series(
+def progress_series(
     activities: list[Activity],
     start: date,
     end: date,
+    period: ProgressPeriod,
+    metric: ProgressMetric,
+    activity_type: ActivityType | Literal["all"] = "run",
 ) -> list[tuple[date, float]]:
-    return [
-        (
-            monday,
-            sum(
-                (activity.distance_km for activity in _runs_in_week(activities, monday)),
-                start=0.0,
-            ),
-        )
-        for monday in _week_mondays(start, end)
-    ]
-
-
-def daily_km_series(
-    activities: list[Activity],
-    start: date,
-    end: date,
-) -> list[tuple[date, float]]:
-    runs = _runs(activities)
-    days = (
-        start + timedelta(days=day_offset)
-        for day_offset in range(max(0, (end - start).days + 1))
-    )
-    return [
-        (
-            day,
-            sum(
-                (activity.distance_km for activity in runs if activity.date == day),
-                start=0.0,
-            ),
-        )
-        for day in days
-    ]
-
-
-def linear_trend(values: list[float]) -> list[float]:
-    if len(values) < 2:
+    if start > end:
         return []
+    if period not in ("7 Days", "4 Weeks", "6 Months", "1 Year"):
+        raise ValueError(f"Unknown progress period: {period}")
+    if metric not in ("Activities", "Kilometers", "Time"):
+        raise ValueError(f"Unknown progress metric: {metric}")
+    if activity_type != "all" and activity_type not in ACTIVITY_TYPES:
+        raise ValueError(f"Unknown activity type: {activity_type}")
 
-    x_mean = (len(values) - 1) / 2
-    y_mean = sum(values) / len(values)
-    slope = sum(
-        (x - x_mean) * (value - y_mean)
-        for x, value in enumerate(values)
-    ) / sum((x - x_mean) ** 2 for x in range(len(values)))
-    intercept = y_mean - slope * x_mean
-    return [intercept + slope * x for x in range(len(values))]
+    if period == "7 Days":
+        bucket_starts = [
+            start + timedelta(days=offset)
+            for offset in range((end - start).days + 1)
+        ]
+        bucket_days = 1
+    elif period == "4 Weeks":
+        bucket_starts = [
+            start + timedelta(weeks=offset)
+            for offset in range((end - start).days // 7 + 1)
+        ]
+        bucket_days = 7
+    else:
+        first_month = date(start.year, start.month, 1)
+        first_month_index = first_month.year * 12 + first_month.month - 1
+        last_month_index = end.year * 12 + end.month - 1
+        bucket_starts = [
+            date(
+                (first_month_index + offset) // 12,
+                (first_month_index + offset) % 12 + 1,
+                1,
+            )
+            for offset in range(last_month_index - first_month_index + 1)
+        ]
+        bucket_days = 0
+
+    eligible_activities = [
+        activity
+        for activity in activities
+        if start <= activity.date <= end
+        and (activity_type == "all" or activity.type == activity_type)
+    ]
+    result: list[tuple[date, float]] = []
+    for index, bucket_start in enumerate(bucket_starts):
+        if bucket_days:
+            bucket_end = min(
+                bucket_start + timedelta(days=bucket_days - 1),
+                end,
+            )
+        elif index + 1 < len(bucket_starts):
+            bucket_end = min(
+                bucket_starts[index + 1] - timedelta(days=1),
+                end,
+            )
+        else:
+            bucket_end = end
+
+        bucket_activities = [
+            activity
+            for activity in eligible_activities
+            if bucket_start <= activity.date <= bucket_end
+        ]
+        if metric == "Activities":
+            value = float(len(bucket_activities))
+        elif metric == "Kilometers":
+            value = sum(
+                activity.distance_km for activity in bucket_activities
+            )
+        else:
+            value = sum(
+                activity.duration.total_seconds()
+                for activity in bucket_activities
+            ) / 3600
+        result.append((bucket_start, value))
+    return result
 
 
 def longest_run(activities: list[Activity]) -> Activity | None:

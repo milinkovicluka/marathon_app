@@ -7,6 +7,7 @@ import pytest
 from PySide6.QtCore import QDate, QSize
 from PySide6.QtWidgets import QApplication, QToolButton
 
+from core.countdown import RACE_START_TIME
 from core.models import Activity
 from core.storage import Storage
 from ui.main_window import MainWindow
@@ -62,6 +63,19 @@ def test_progress_controls_have_only_requested_periods_and_metrics(window):
     assert window.chart_activity_filter.currentText() == "Run"
     assert window.chart_metric.currentText() == "Activities"
     assert window.period_buttons["7 Days"].isChecked()
+    race_day = RACE_START_TIME.date()
+    assert window.countdown_title.text() == (
+        f"PRAGUE MARATHON · {race_day.day} {race_day:%b %Y}".upper()
+    )
+    for button in (window.period_back_button, window.period_forward_button):
+        assert button.text() == ""
+        assert not button.icon().isNull()
+        icon_image = button.icon().pixmap(QSize(18, 18)).toImage()
+        assert any(
+            icon_image.pixelColor(x, y).name() == "#ffffff"
+            for x in range(icon_image.width())
+            for y in range(icon_image.height())
+        )
 
 
 def test_current_period_stops_at_today_and_cannot_go_forward(

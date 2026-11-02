@@ -1,9 +1,10 @@
 from datetime import date, timedelta
+from typing import Literal
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
-from PySide6.QtCore import QDate, QLocale, QTime, QTimer, Qt
+from PySide6.QtCore import QDate, QLocale, QSize, QTime, QTimer, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -30,11 +31,14 @@ from PySide6.QtWidgets import (
 
 from core.countdown import RACE_START_TIME, format_countdown, time_until_race
 from core.formatting import format_duration, format_pace
-from core.models import ACTIVITY_TYPES, Activity
+from core.models import ACTIVITY_TYPES, Activity, ActivityType
 from core.stats import (
+    ProgressMetric,
+    ProgressPeriod,
     average_pace,
     km_in_week,
     longest_run,
+    progress_series,
 )
 from core.storage import Storage
 from ui import theme
@@ -61,7 +65,7 @@ def _shift_month(day: date, months: int) -> date:
 
 
 def _progress_period_bounds(
-    period: str,
+    period: ProgressPeriod,
     offset: int,
     today: date,
 ) -> tuple[date, date]:
@@ -98,7 +102,10 @@ class MainWindow(QMainWindow):
         countdown_layout = QHBoxLayout(countdown_card)
         countdown_layout.setContentsMargins(20, 14, 20, 14)
         countdown_text_layout = QVBoxLayout()
-        self.countdown_title = QLabel("PRAGUE MARATHON · 2 MAY 2027")
+        race_day = RACE_START_TIME.date()
+        self.countdown_title = QLabel(
+            f"PRAGUE MARATHON · {race_day.day} {race_day:%b %Y}".upper()
+        )
         self.countdown_title.setObjectName("countdownTitle")
         countdown_text_layout.addWidget(self.countdown_title)
         countdown_value_layout = QHBoxLayout()
@@ -152,8 +159,10 @@ class MainWindow(QMainWindow):
         chart_controls.addStretch(1)
 
         self._progress_period_offset = 0
-        self._progress_period = "7 Days"
-        self.period_back_button = QPushButton("‹", progress_tab)
+        self._progress_period: ProgressPeriod = "7 Days"
+        self.period_back_button = QPushButton(progress_tab)
+        self.period_back_button.setIcon(theme.navigation_arrow_icon(-1))
+        self.period_back_button.setIconSize(QSize(18, 18))
         self.period_back_button.setFixedSize(38, 36)
         self.period_back_button.setAccessibleName("Previous period")
         self.period_back_button.clicked.connect(self._on_period_back)
@@ -164,7 +173,9 @@ class MainWindow(QMainWindow):
         self.period_range_label.setMinimumWidth(150)
         chart_controls.addWidget(self.period_range_label)
 
-        self.period_forward_button = QPushButton("›", progress_tab)
+        self.period_forward_button = QPushButton(progress_tab)
+        self.period_forward_button.setIcon(theme.navigation_arrow_icon(1))
+        self.period_forward_button.setIconSize(QSize(18, 18))
         self.period_forward_button.setFixedSize(38, 36)
         self.period_forward_button.setAccessibleName("Next period")
         self.period_forward_button.clicked.connect(self._on_period_forward)
@@ -174,7 +185,13 @@ class MainWindow(QMainWindow):
         self.period_button_group = QButtonGroup(progress_tab)
         self.period_button_group.setExclusive(True)
         self.period_buttons: dict[str, QPushButton] = {}
-        for period in ("7 Days", "4 Weeks", "6 Months", "1 Year"):
+        period_options: tuple[ProgressPeriod, ...] = (
+            "7 Days",
+            "4 Weeks",
+            "6 Months",
+            "1 Year",
+        )
+        for period in period_options:
             button = QPushButton(period, progress_tab)
             button.setCheckable(True)
             button.setChecked(period == self._progress_period)
@@ -402,7 +419,7 @@ class MainWindow(QMainWindow):
             f"avg {average_pace_text}"
         )
 
-    def _set_progress_period(self, period: str) -> None:
+    def _set_progress_period(self, period: ProgressPeriod) -> None:
         self._progress_period = period
         self._progress_period_offset = 0
         self._refresh_progress_chart()
@@ -440,65 +457,41 @@ class MainWindow(QMainWindow):
         self.period_back_button.setEnabled(True)
         self.period_forward_button.setEnabled(self._progress_period_offset < 0)
 
-        selected_type = self.chart_activity_filter.currentData()
-        selected_activities = [
-            activity
-            for activity in activities
-            if (selected_type == "all" or activity.type == selected_type)
-            and start <= activity.date <= end
+        activity_type_by_label: dict[
+            str,
+            ActivityType | Literal["all"],
+        ] = {
+            "All activities": "all",
+            **{
+                activity_type.title(): activity_type
+                for activity_type in ACTIVITY_TYPES
+            },
+        }
+        selected_type = activity_type_by_label[
+            self.chart_activity_filter.currentText()
         ]
-        metric = self.chart_metric.currentText()
-
+        metric_by_label: dict[str, ProgressMetric] = {
+            "Activities": "Activities",
+            "Kilometers": "Kilometers",
+            "Time": "Time",
+        }
+        metric = metric_by_label[self.chart_metric.currentText()]
+        series = progress_series(
+            activities,
+            start,
+            end,
+            self._progress_period,
+            metric,
+            selected_type,
+        )
+        bucket_starts = [bucket_start for bucket_start, _ in series]
+        values = [value for _, value in series]
         if self._progress_period == "7 Days":
-            bucket_starts = [
-                start + timedelta(days=offset)
-                for offset in range((end - start).days + 1)
-            ]
             labels = [bucket.strftime("%a") for bucket in bucket_starts]
-            bucket_size = timedelta(days=1)
         elif self._progress_period == "4 Weeks":
-            bucket_starts = [
-                start + timedelta(weeks=offset) for offset in range(4)
-            ]
             labels = [_format_day(bucket) for bucket in bucket_starts]
-            bucket_size = timedelta(weeks=1)
         else:
-            month_count = 6 if self._progress_period == "6 Months" else 12
-            bucket_starts = [
-                _shift_month(start, month_offset)
-                for month_offset in range(month_count)
-            ]
             labels = [bucket.strftime("%b") for bucket in bucket_starts]
-            bucket_size = None
-
-        values: list[float] = []
-        for index, bucket_start in enumerate(bucket_starts):
-            if bucket_size is not None:
-                bucket_end = min(bucket_start + bucket_size - timedelta(days=1), end)
-            elif index + 1 < len(bucket_starts):
-                bucket_end = min(
-                    _shift_month(bucket_start, 1) - timedelta(days=1),
-                    end,
-                )
-            else:
-                bucket_end = end
-            bucket_activities = [
-                activity
-                for activity in selected_activities
-                if bucket_start <= activity.date <= bucket_end
-            ]
-            if metric == "Activities":
-                value = float(len(bucket_activities))
-            elif metric == "Kilometers":
-                value = sum(
-                    activity.distance_km for activity in bucket_activities
-                )
-            else:
-                value = sum(
-                    activity.duration.total_seconds()
-                    for activity in bucket_activities
-                ) / 3600
-            values.append(value)
 
         x_positions = list(range(len(bucket_starts)))
         self.chart_axes.plot(

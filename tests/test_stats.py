@@ -5,11 +5,9 @@ import pytest
 from core.models import Activity, ActivityType
 from core.stats import (
     average_pace,
-    daily_km_series,
     km_in_week,
-    linear_trend,
     longest_run,
-    weekly_km_series,
+    progress_series,
 )
 
 
@@ -44,68 +42,93 @@ def test_km_in_week_empty():
     assert km_in_week([], date(2026, 11, 4)) == 0
 
 
-def test_weekly_series_covers_whole_weeks_in_range():
-    series = weekly_km_series(
-        WEEK,
-        start=date(2026, 10, 28),
-        end=date(2026, 11, 4),
-    )
-    assert series == [(date(2026, 10, 26), 12), (date(2026, 11, 2), 36)]
+def test_daily_progress_buckets_activity_count_distance_and_time():
+    kwargs = {
+        "activities": WEEK,
+        "start": date(2026, 11, 1),
+        "end": date(2026, 11, 4),
+        "period": "7 Days",
+    }
 
-
-def test_weekly_series_includes_empty_weeks():
-    series = weekly_km_series(
-        [],
-        start=date(2026, 10, 19),
-        end=date(2026, 11, 4),
-    )
-    assert [km for _, km in series] == [0, 0, 0]
-
-
-def test_daily_series_includes_every_day_in_range():
-    series = daily_km_series(
-        WEEK,
-        start=date(2026, 11, 1),
-        end=date(2026, 11, 4),
-    )
-    assert series == [
+    assert progress_series(**kwargs, metric="Activities") == [
+        (date(2026, 11, 1), 1),
+        (date(2026, 11, 2), 1),
+        (date(2026, 11, 3), 0),
+        (date(2026, 11, 4), 1),
+    ]
+    assert progress_series(**kwargs, metric="Kilometers") == [
         (date(2026, 11, 1), 12),
         (date(2026, 11, 2), 8),
         (date(2026, 11, 3), 0),
         (date(2026, 11, 4), 10),
     ]
+    assert [value for _, value in progress_series(**kwargs, metric="Time")] == (
+        pytest.approx([70 / 60, 44 / 60, 0, 52 / 60])
+    )
 
 
-def test_daily_series_sums_runs_on_same_day():
-    runs = [
-        act(date(2026, 11, 2), 5, 30),
-        act(date(2026, 11, 2), 3, 20),
+def test_weekly_progress_includes_empty_weeks_and_filters_activity_type():
+    runs_with_a_gap = [
+        act(date(2026, 10, 26), 12, 70),
+        act(date(2026, 11, 9), 9, 50),
     ]
-    assert daily_km_series(
-        runs,
-        date(2026, 11, 2),
-        date(2026, 11, 2),
-    ) == [(date(2026, 11, 2), 8)]
+    series = progress_series(
+        runs_with_a_gap,
+        start=date(2026, 10, 26),
+        end=date(2026, 11, 22),
+        period="4 Weeks",
+        metric="Kilometers",
+    )
+    assert series == [
+        (date(2026, 10, 26), 12),
+        (date(2026, 11, 2), 0),
+        (date(2026, 11, 9), 9),
+        (date(2026, 11, 16), 0),
+    ]
 
-
-def test_daily_series_ignores_bike():
-    assert daily_km_series(
+    all_activities = progress_series(
         WEEK,
-        date(2026, 11, 5),
-        date(2026, 11, 5),
-    ) == [(date(2026, 11, 5), 0)]
+        start=date(2026, 11, 2),
+        end=date(2026, 11, 8),
+        period="4 Weeks",
+        metric="Activities",
+        activity_type="all",
+    )
+    assert all_activities == [(date(2026, 11, 2), 4)]
 
 
-def test_linear_trend_on_straight_line():
-    assert linear_trend([10, 20, 30]) == pytest.approx([10, 20, 30])
+def test_monthly_progress_respects_selected_range_and_activity_type():
+    series = progress_series(
+        WEEK,
+        start=date(2026, 10, 1),
+        end=date(2026, 11, 4),
+        period="6 Months",
+        metric="Kilometers",
+    )
+    assert series == [
+        (date(2026, 10, 1), 0),
+        (date(2026, 11, 1), 30),
+    ]
+
+    all_activities = progress_series(
+        WEEK,
+        start=date(2026, 11, 1),
+        end=date(2026, 11, 8),
+        period="1 Year",
+        metric="Activities",
+        activity_type="all",
+    )
+    assert all_activities == [(date(2026, 11, 1), 5)]
 
 
-def test_linear_trend_fits_noisy_data():
-    assert linear_trend([10, 30, 20]) == pytest.approx([15, 20, 25])
-
-
-def test_linear_trend_needs_two_points():
-    assert linear_trend([10]) == []
+def test_progress_series_empty_range():
+    assert progress_series(
+        WEEK,
+        start=date(2026, 11, 4),
+        end=date(2026, 11, 1),
+        period="7 Days",
+        metric="Kilometers",
+    ) == []
 
 
 def test_longest_run_ignores_bike():

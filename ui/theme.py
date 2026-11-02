@@ -87,7 +87,7 @@ class ThemedCalendarWidget(QCalendarWidget):
         painter.restore()
 
 
-def _calendar_arrow_icon(direction: int) -> QIcon:
+def navigation_arrow_icon(direction: int) -> QIcon:
     pixmap = QPixmap(18, 18)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
@@ -137,7 +137,7 @@ def style_calendar(calendar: ThemedCalendarWidget) -> None:
         button = calendar.findChild(QToolButton, button_name)
         if button is not None:
             button.setText("")
-            button.setIcon(_calendar_arrow_icon(direction))
+            button.setIcon(navigation_arrow_icon(direction))
             button.setIconSize(QSize(14, 14))
 
 
