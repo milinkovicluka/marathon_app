@@ -4,8 +4,8 @@ from datetime import date, timedelta
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QDate
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QDate, QSize
+from PySide6.QtWidgets import QApplication, QToolButton
 
 from core.models import Activity
 from core.storage import Storage
@@ -30,52 +30,85 @@ def window(app, tmp_path):
     main_window.close()
 
 
-def test_form_date_max_moves_forward_at_midnight(window, monkeypatch):
+def _fixed_today(monkeypatch, year=2026, month=11, day=1):
     class FakeDate(date):
         @classmethod
         def today(cls):
-            return cls(2026, 11, 1)
+            return cls(year, month, day)
 
-    window._last_reload_date = date(2026, 10, 31)
-    window.date_edit.setMaximumDate(QDate(2026, 10, 31))
     monkeypatch.setattr("ui.main_window.date", FakeDate)
+    return FakeDate.today()
+
+
+def test_form_date_max_moves_forward_at_midnight(window, monkeypatch):
+    today = _fixed_today(monkeypatch)
+    window._last_reload_date = today - timedelta(days=1)
+    window.date_edit.setMaximumDate(QDate(2026, 10, 31))
 
     window._on_timer()
 
     assert window.date_edit.maximumDate().toString("yyyy-MM-dd") == "2026-11-01"
 
 
-def test_weekly_labels_reset_rotation_after_daily(window, app):
-    window.tabs.setCurrentIndex(1)
-    window.chart_granularity.setCurrentText("By day")
-    app.processEvents()
-    window.chart_granularity.setCurrentText("By week")
-    app.processEvents()
-
-    assert all(
-        label.get_rotation() == 0
-        for label in window.chart_axes.get_xticklabels()
-    )
-
-
-def test_daily_axis_stays_inside_selected_range(window, app):
-    window.tabs.setCurrentIndex(1)
-    window.chart_granularity.setCurrentText("By day")
-    window.chart_from_edit.setDate(QDate(2026, 10, 27))
-    window.chart_to_edit.setDate(QDate(2026, 10, 29))
-    app.processEvents()
-
-    labels = {
-        label.get_text()
-        for label in window.chart_axes.get_xticklabels()
-        if label.get_text()
-    }
-
-    assert "26 Oct" not in labels
-    assert "30 Oct" not in labels
+def test_progress_controls_have_only_requested_periods_and_metrics(window):
+    assert [
+        window.period_buttons[period].text()
+        for period in ("7 Days", "4 Weeks", "6 Months", "1 Year")
+    ] == ["7 Days", "4 Weeks", "6 Months", "1 Year"]
+    assert [
+        window.chart_metric.itemText(index)
+        for index in range(window.chart_metric.count())
+    ] == ["Activities", "Kilometers", "Time"]
+    assert window.chart_activity_filter.currentText() == "Run"
+    assert window.chart_metric.currentText() == "Activities"
+    assert window.period_buttons["7 Days"].isChecked()
 
 
-def test_weekly_chart_only_counts_selected_dates(window, app):
+def test_current_period_stops_at_today_and_cannot_go_forward(
+    window,
+    monkeypatch,
+):
+    today = _fixed_today(monkeypatch)
+    window._refresh_chart([])
+
+    assert window.period_range_label.text() == "26 Oct–1 Nov 2026"
+    assert not window.period_forward_button.isEnabled()
+    assert window.period_back_button.isEnabled()
+
+    window.period_back_button.click()
+
+    assert window.period_range_label.text() == "19–25 Oct 2026"
+    assert window.period_forward_button.isEnabled()
+    assert window._progress_period_offset == -1
+
+    window.period_forward_button.click()
+
+    assert window.period_range_label.text() == "26 Oct–1 Nov 2026"
+    assert not window.period_forward_button.isEnabled()
+    assert window._progress_period_offset == 0
+    assert today == date(2026, 11, 1)
+
+
+def test_period_button_resets_navigation_to_current_period(
+    window,
+    monkeypatch,
+):
+    _fixed_today(monkeypatch)
+    window.period_back_button.click()
+    window.period_buttons["4 Weeks"].click()
+
+    assert window._progress_period == "4 Weeks"
+    assert window._progress_period_offset == 0
+    assert window.period_range_label.text() == "5 Oct–1 Nov 2026"
+    assert not window.period_forward_button.isEnabled()
+    assert len(window.chart_axes.lines[0].get_ydata()) == 4
+
+
+def test_metric_and_activity_filter_update_graph_values(
+    window,
+    monkeypatch,
+):
+    _fixed_today(monkeypatch)
     window.storage.add(
         Activity(
             date=date(2026, 10, 26),
@@ -87,19 +120,134 @@ def test_weekly_chart_only_counts_selected_dates(window, app):
     window.storage.add(
         Activity(
             date=date(2026, 10, 28),
-            type="run",
-            distance_km=7,
-            duration=timedelta(minutes=35),
+            type="bike",
+            distance_km=12,
+            duration=timedelta(minutes=30),
         )
     )
     window._reload()
-    window.tabs.setCurrentIndex(1)
-    window.chart_granularity.setCurrentText("By week")
-    window.chart_from_edit.setDate(QDate(2026, 10, 28))
-    window.chart_to_edit.setDate(QDate(2026, 10, 29))
-    app.processEvents()
+    window.chart_activity_filter.setCurrentText("Run")
 
-    assert window.chart_axes.get_title() == (
-        "Weekly distance · 28 Oct – 29 Oct · 7 km"
+    assert list(window.chart_axes.lines[0].get_ydata()) == [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ]
+
+    window.chart_metric.setCurrentText("Kilometers")
+    assert list(window.chart_axes.lines[0].get_ydata()) == [
+        5,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ]
+    assert window.chart_axes.get_ylabel() == "Kilometers"
+
+    window.chart_metric.setCurrentText("Time")
+    assert list(window.chart_axes.lines[0].get_ydata()) == pytest.approx(
+        [25 / 60, 0, 0, 0, 0, 0, 0]
     )
-    assert window.chart_axes.patches[0].get_height() == 7
+    assert window.chart_axes.get_ylabel() == "Hours"
+
+    window.chart_activity_filter.setCurrentText("Bike")
+    assert list(window.chart_axes.lines[0].get_ydata()) == pytest.approx(
+        [0, 0, 0.5, 0, 0, 0, 0]
+    )
+
+
+def test_four_weeks_aggregates_activities_by_week(window, monkeypatch):
+    _fixed_today(monkeypatch)
+    for day, distance in ((5, 3), (12, 4), (26, 5)):
+        window.storage.add(
+            Activity(
+                date=date(2026, 10, day),
+                type="run",
+                distance_km=distance,
+                duration=timedelta(minutes=30),
+            )
+        )
+    window._reload()
+    window.period_buttons["4 Weeks"].click()
+    window.chart_metric.setCurrentText("Kilometers")
+
+    assert list(window.chart_axes.lines[0].get_ydata()) == [3, 4, 0, 5]
+    assert [tick.get_text() for tick in window.chart_axes.get_xticklabels()] == [
+        "5 Oct",
+        "12 Oct",
+        "19 Oct",
+        "26 Oct",
+    ]
+
+
+def test_month_periods_use_monthly_points(window, monkeypatch):
+    _fixed_today(monkeypatch)
+    window.period_buttons["6 Months"].click()
+
+    assert window.period_range_label.text() == "1 Jun–1 Nov 2026"
+    assert len(window.chart_axes.lines[0].get_ydata()) == 6
+    assert [tick.get_text() for tick in window.chart_axes.get_xticklabels()] == [
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+    ]
+
+    window.period_buttons["1 Year"].click()
+    assert window.period_range_label.text() == "1 Dec 2025–1 Nov 2026"
+    assert len(window.chart_axes.lines[0].get_ydata()) == 12
+
+
+def test_calendar_dims_dates_outside_shown_month_and_highlights_weekends(window):
+    calendar = window.date_edit.calendarWidget()
+    calendar.setCurrentPage(2026, 11)
+
+    previous_month = calendar.date_color(QDate(2026, 10, 31))
+    current_weekday = calendar.date_color(QDate(2026, 11, 2))
+    current_weekend = calendar.date_color(QDate(2026, 11, 1))
+    following_month = calendar.date_color(QDate(2026, 12, 1))
+
+    assert previous_month.name() == "#8a90a2"
+    assert following_month.name() == "#8a90a2"
+    assert current_weekday.name() == "#e6e8ef"
+    assert current_weekend.name() == "#00e5ff"
+
+
+def test_calendar_month_navigation_arrows_are_white(window):
+    calendar = window.date_edit.calendarWidget()
+    checked_buttons = 0
+    for name in (
+        "qt_calendar_prevmonth",
+        "qt_calendar_nextmonth",
+        "qt_calendar_prevyear",
+        "qt_calendar_nextyear",
+    ):
+        button = calendar.findChild(QToolButton, name)
+        if button is None:
+            continue
+        checked_buttons += 1
+        assert not button.icon().isNull()
+        image = button.icon().pixmap(QSize(18, 18)).toImage()
+        assert any(
+            image.pixelColor(x, y).name() == "#ffffff"
+            for x in range(image.width())
+            for y in range(image.height())
+        )
+    assert checked_buttons >= 2
+
+
+def test_calendar_does_not_show_week_numbers(window):
+    calendar = window.date_edit.calendarWidget()
+
+    assert (
+        calendar.verticalHeaderFormat()
+        == calendar.VerticalHeaderFormat.NoVerticalHeader
+    )

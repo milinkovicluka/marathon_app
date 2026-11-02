@@ -1,15 +1,12 @@
 from datetime import date, timedelta
 
-import matplotlib.dates as mdates
-import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import MaxNLocator
 from PySide6.QtCore import QDate, QLocale, QTime, QTimer, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QCheckBox,
+    QButtonGroup,
     QComboBox,
     QDateEdit,
     QDoubleSpinBox,
@@ -31,16 +28,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.countdown import format_countdown, time_until_race
+from core.countdown import RACE_START_TIME, format_countdown, time_until_race
 from core.formatting import format_duration, format_pace
 from core.models import ACTIVITY_TYPES, Activity
 from core.stats import (
     average_pace,
-    daily_km_series,
     km_in_week,
-    linear_trend,
     longest_run,
-    weekly_km_series,
 )
 from core.storage import Storage
 from ui import theme
@@ -51,20 +45,39 @@ def _format_day(day: date, *, with_weekday: bool = False) -> str:
     return f"{prefix}{day.day} {day:%b}"
 
 
-def _weekly_label_step(count: int) -> int:
-    if count > 32:
-        return 4
-    if count > 16:
-        return 2
-    return 1
+def _format_date_range(start: date, end: date) -> str:
+    if start == end:
+        return _format_day(start)
+    if start.year == end.year and start.month == end.month:
+        return f"{start.day}–{end.day} {end:%b %Y}"
+    if start.year == end.year:
+        return f"{_format_day(start)}–{_format_day(end)} {end:%Y}"
+    return f"{_format_day(start)} {start:%Y}–{_format_day(end)} {end:%Y}"
 
 
-def _daily_tick_interval(monday_count: int) -> int:
-    if monday_count > 24:
-        return 4
-    if monday_count > 10:
-        return 2
-    return 1
+def _shift_month(day: date, months: int) -> date:
+    month_index = day.year * 12 + day.month - 1 + months
+    return date(month_index // 12, month_index % 12 + 1, 1)
+
+
+def _progress_period_bounds(
+    period: str,
+    offset: int,
+    today: date,
+) -> tuple[date, date]:
+    if period == "7 Days":
+        end = today + timedelta(days=7 * offset)
+        return end - timedelta(days=6), end
+    if period == "4 Weeks":
+        end = today + timedelta(days=28 * offset)
+        return end - timedelta(days=27), end
+    if period in ("6 Months", "1 Year"):
+        month_count = 6 if period == "6 Months" else 12
+        current_start = _shift_month(today, -(month_count - 1))
+        start = _shift_month(current_start, month_count * offset)
+        next_start = _shift_month(start, month_count)
+        return start, next_start - timedelta(days=1)
+    raise ValueError(f"Unknown progress period: {period}")
 
 
 class MainWindow(QMainWindow):
@@ -115,43 +128,65 @@ class MainWindow(QMainWindow):
         progress_layout = QVBoxLayout(progress_tab)
         self.tabs.addTab(progress_tab, "Progress")
         chart_controls = QHBoxLayout()
-        self.chart_granularity = QComboBox(progress_tab)
-        self.chart_granularity.addItems(["By week", "By day"])
-        self.chart_granularity.currentIndexChanged.connect(
-            self._on_chart_controls_changed
+        self.chart_activity_filter = QComboBox(progress_tab)
+        self.chart_activity_filter.addItem("All activities", "all")
+        for activity_type in ACTIVITY_TYPES:
+            self.chart_activity_filter.addItem(
+                activity_type.title(),
+                activity_type,
+            )
+        self.chart_activity_filter.setCurrentIndex(
+            self.chart_activity_filter.findData("run")
         )
-        chart_controls.addWidget(self.chart_granularity)
-
-        self.trend_checkbox = QCheckBox("Trend line", progress_tab)
-        self.trend_checkbox.toggled.connect(self._on_chart_controls_changed)
-        chart_controls.addWidget(self.trend_checkbox)
-        chart_controls.addSpacing(16)
-
-        today = date.today()
-        default_start = today - timedelta(days=today.weekday(), weeks=11)
-        self.chart_from_edit = QDateEdit(progress_tab)
-        self.chart_from_edit.setCalendarPopup(True)
-        self.chart_from_edit.setDisplayFormat("d MMM yyyy")
-        self.chart_from_edit.setMinimumWidth(130)
-        self.chart_from_edit.setDate(
-            QDate(default_start.year, default_start.month, default_start.day)
+        self.chart_activity_filter.currentIndexChanged.connect(
+            self._refresh_progress_chart
         )
-        self.chart_from_edit.setMaximumDate(QDate.currentDate())
-        self.chart_from_edit.dateChanged.connect(self._on_start_date_changed)
-        chart_controls.addWidget(QLabel("From", progress_tab))
-        chart_controls.addWidget(self.chart_from_edit)
+        chart_controls.addWidget(self.chart_activity_filter)
 
-        self.chart_to_edit = QDateEdit(progress_tab)
-        self.chart_to_edit.setCalendarPopup(True)
-        self.chart_to_edit.setDisplayFormat("d MMM yyyy")
-        self.chart_to_edit.setMinimumWidth(130)
-        self.chart_to_edit.setMinimumDate(self.chart_from_edit.date())
-        self.chart_to_edit.setMaximumDate(QDate.currentDate())
-        self.chart_to_edit.setDate(QDate(today.year, today.month, today.day))
-        self.chart_to_edit.dateChanged.connect(self._on_chart_controls_changed)
-        chart_controls.addWidget(QLabel("To", progress_tab))
-        chart_controls.addWidget(self.chart_to_edit)
+        self.chart_metric = QComboBox(progress_tab)
+        self.chart_metric.addItems(["Activities", "Kilometers", "Time"])
+        self.chart_metric.currentIndexChanged.connect(
+            self._refresh_progress_chart
+        )
+        chart_controls.addWidget(self.chart_metric)
         chart_controls.addStretch(1)
+
+        self._progress_period_offset = 0
+        self._progress_period = "7 Days"
+        self.period_back_button = QPushButton("‹", progress_tab)
+        self.period_back_button.setFixedSize(38, 36)
+        self.period_back_button.setAccessibleName("Previous period")
+        self.period_back_button.clicked.connect(self._on_period_back)
+        chart_controls.addWidget(self.period_back_button)
+
+        self.period_range_label = QLabel(progress_tab)
+        self.period_range_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.period_range_label.setMinimumWidth(150)
+        chart_controls.addWidget(self.period_range_label)
+
+        self.period_forward_button = QPushButton("›", progress_tab)
+        self.period_forward_button.setFixedSize(38, 36)
+        self.period_forward_button.setAccessibleName("Next period")
+        self.period_forward_button.clicked.connect(self._on_period_forward)
+        chart_controls.addWidget(self.period_forward_button)
+
+        chart_controls.addSpacing(12)
+        self.period_button_group = QButtonGroup(progress_tab)
+        self.period_button_group.setExclusive(True)
+        self.period_buttons: dict[str, QPushButton] = {}
+        for period in ("7 Days", "4 Weeks", "6 Months", "1 Year"):
+            button = QPushButton(period, progress_tab)
+            button.setCheckable(True)
+            button.setChecked(period == self._progress_period)
+            button.clicked.connect(
+                lambda _checked=False, selected=period: self._set_progress_period(
+                    selected
+                )
+            )
+            self.period_button_group.addButton(button)
+            self.period_buttons[period] = button
+            chart_controls.addWidget(button)
+
         progress_layout.addLayout(chart_controls)
 
         cards_layout = QHBoxLayout()
@@ -171,6 +206,8 @@ class MainWindow(QMainWindow):
         self.date_edit.setDisplayFormat("ddd d MMM")
         self.date_edit.setMaximumDate(QDate.currentDate())
         self.date_edit.setCalendarPopup(True)
+        self.date_edit.setCalendarWidget(theme.ThemedCalendarWidget())
+        theme.style_calendar(self.date_edit.calendarWidget())
         form_layout.addRow("Date", self.date_edit)
 
         self.type_combo = QComboBox(self)
@@ -295,10 +332,6 @@ class MainWindow(QMainWindow):
         if today != self._last_reload_date:
             today_qdate = QDate(today.year, today.month, today.day)
             self.date_edit.setMaximumDate(today_qdate)
-            self.chart_from_edit.setMaximumDate(today_qdate)
-            self.chart_to_edit.setMaximumDate(today_qdate)
-            if self.chart_to_edit.date().toPython() == self._last_reload_date:
-                self.chart_to_edit.setDate(today_qdate)
             self._reload()
             return
         self._refresh_week_label(list(self._activities_by_id.values()))
@@ -369,228 +402,141 @@ class MainWindow(QMainWindow):
             f"avg {average_pace_text}"
         )
 
+    def _set_progress_period(self, period: str) -> None:
+        self._progress_period = period
+        self._progress_period_offset = 0
+        self._refresh_progress_chart()
+
+    def _on_period_back(self) -> None:
+        self._progress_period_offset -= 1
+        self._refresh_progress_chart()
+
+    def _on_period_forward(self) -> None:
+        if self._progress_period_offset < 0:
+            self._progress_period_offset += 1
+            self._refresh_progress_chart()
+
+    def _refresh_progress_chart(self, *_values: object) -> None:
+        del _values
+        self._refresh_chart(list(self._activities_by_id.values()))
+
     def _refresh_chart(self, activities: list[Activity]) -> None:
         self.chart_axes.clear()
         self.chart_axes.set_facecolor(theme.PLOT_BACKGROUND)
 
-        start = self.chart_from_edit.date().toPython()
-        end = self.chart_to_edit.date().toPython()
         today = date.today()
-        current_monday = today - timedelta(days=today.weekday())
-        weekly = self.chart_granularity.currentText() == "By week"
-        positions: list[int] = []
-        if weekly:
-            chart_activities = [
-                activity
-                for activity in activities
-                if start <= activity.date <= end
+        start, period_end = _progress_period_bounds(
+            self._progress_period,
+            self._progress_period_offset,
+            today,
+        )
+        end = (
+            min(period_end, today)
+            if self._progress_period_offset == 0
+            else period_end
+        )
+        self.period_range_label.setText(_format_date_range(start, end))
+        self.period_back_button.setEnabled(True)
+        self.period_forward_button.setEnabled(self._progress_period_offset < 0)
+
+        selected_type = self.chart_activity_filter.currentData()
+        selected_activities = [
+            activity
+            for activity in activities
+            if (selected_type == "all" or activity.type == selected_type)
+            and start <= activity.date <= end
+        ]
+        metric = self.chart_metric.currentText()
+
+        if self._progress_period == "7 Days":
+            bucket_starts = [
+                start + timedelta(days=offset)
+                for offset in range((end - start).days + 1)
             ]
-            series = weekly_km_series(chart_activities, start, end)
-            dates = [monday for monday, _ in series]
-            values = [km for _, km in series]
-            positions = list(range(len(series)))
-            bar_x: list[int] | list[date] = positions
-            bar_width = 0.7
-            kind = "Weekly"
+            labels = [bucket.strftime("%a") for bucket in bucket_starts]
+            bucket_size = timedelta(days=1)
+        elif self._progress_period == "4 Weeks":
+            bucket_starts = [
+                start + timedelta(weeks=offset) for offset in range(4)
+            ]
+            labels = [_format_day(bucket) for bucket in bucket_starts]
+            bucket_size = timedelta(weeks=1)
         else:
-            series = daily_km_series(activities, start, end)
-            dates = [day for day, _ in series]
-            values = [km for _, km in series]
-            bar_x = dates
-            bar_width = 0.8
-            kind = "Daily"
-        title = (
-            f"{kind} distance · {_format_day(start)} – {_format_day(end)} · "
-            f"{sum(values):.0f} km"
-        )
+            month_count = 6 if self._progress_period == "6 Months" else 12
+            bucket_starts = [
+                _shift_month(start, month_offset)
+                for month_offset in range(month_count)
+            ]
+            labels = [bucket.strftime("%b") for bucket in bucket_starts]
+            bucket_size = None
 
-        bars = self.chart_axes.bar(
-            bar_x,
+        values: list[float] = []
+        for index, bucket_start in enumerate(bucket_starts):
+            if bucket_size is not None:
+                bucket_end = min(bucket_start + bucket_size - timedelta(days=1), end)
+            elif index + 1 < len(bucket_starts):
+                bucket_end = min(
+                    _shift_month(bucket_start, 1) - timedelta(days=1),
+                    end,
+                )
+            else:
+                bucket_end = end
+            bucket_activities = [
+                activity
+                for activity in selected_activities
+                if bucket_start <= activity.date <= bucket_end
+            ]
+            if metric == "Activities":
+                value = float(len(bucket_activities))
+            elif metric == "Kilometers":
+                value = sum(
+                    activity.distance_km for activity in bucket_activities
+                )
+            else:
+                value = sum(
+                    activity.duration.total_seconds()
+                    for activity in bucket_activities
+                ) / 3600
+            values.append(value)
+
+        x_positions = list(range(len(bucket_starts)))
+        self.chart_axes.plot(
+            x_positions,
             values,
-            width=bar_width,
-            color=theme.ACCENT,
+            color=theme.BLUE,
+            linewidth=2.5,
+            marker="o",
+            markersize=7,
+            markerfacecolor=theme.BLUE,
+            markeredgecolor=theme.PLOT_BACKGROUND,
+            markeredgewidth=1.5,
         )
-        if weekly or (end - start).days < 31:
-            labels: list[str] = []
-            for day, value in zip(dates, values):
-                if value <= 0:
-                    labels.append("")
-                elif weekly and day == current_monday and end >= today:
-                    labels.append(f"{value:g} · so far")
-                else:
-                    labels.append(f"{value:g}")
-            self.chart_axes.bar_label(
-                bars,
-                labels=labels,
-                padding=4,
-                color=theme.TEXT,
-                fontsize=9,
-            )
+        self.chart_axes.set_xticks(x_positions, labels)
+        self.chart_axes.set_xlim(-0.5, len(x_positions) - 0.5)
+        self.chart_axes.set_ylim(0, max(1, max(values, default=0) * 1.15))
+        if metric == "Activities":
+            self.chart_axes.yaxis.set_major_locator(MaxNLocator(integer=True))
 
-        trend_x: list[int] | list[date] = []
-        trend_values: list[float] = []
-        if self.trend_checkbox.isChecked():
-            note: str | None = None
-            if weekly:
-                complete_week_indexes = [
-                    index
-                    for index, day in enumerate(dates)
-                    if start <= day
-                    and day + timedelta(days=6) <= end
-                    and day < current_monday
-                ]
-                trend_input = [
-                    values[index] for index in complete_week_indexes
-                ]
-                if len(trend_input) >= 2 and any(
-                    value > 0 for value in trend_input
-                ):
-                    trend_values = linear_trend(trend_input)
-                    trend_x = [
-                        positions[index]
-                        for index in complete_week_indexes
-                    ]
-                elif len(trend_input) < 2:
-                    note = "Trend needs 2 complete weeks"
-                else:
-                    note = "No completed distance yet"
-            else:
-                if len(values) >= 2 and any(value > 0 for value in values):
-                    trend_values = linear_trend(values)
-                    trend_x = dates
-                elif len(values) < 2:
-                    note = "Trend needs 2 days"
-                else:
-                    note = "No distance to trend yet"
-
-            if trend_values:
-                for width in range(4, 20, 2):
-                    self.chart_axes.plot(
-                        trend_x,
-                        trend_values,
-                        color=theme.TREND,
-                        linewidth=width,
-                        alpha=0.04,
-                        solid_capstyle="round",
-                    )
-                self.chart_axes.plot(
-                    trend_x,
-                    trend_values,
-                    color=theme.TREND,
-                    linewidth=2,
-                    label=(
-                        f"Trend: {trend_values[1] - trend_values[0]:+.1f} "
-                        f"km/{'week' if weekly else 'day'}"
-                    ),
-                    solid_capstyle="round",
-                )
-                self.chart_axes.legend(
-                    facecolor=theme.SURFACE,
-                    edgecolor=theme.BORDER,
-                    labelcolor=theme.TEXT,
-                )
-            elif note is not None:
-                self.chart_axes.text(
-                    0.98,
-                    0.95,
-                    note,
-                    transform=self.chart_axes.transAxes,
-                    ha="right",
-                    va="top",
-                    color=theme.MUTED_TEXT,
-                    fontsize=9,
-                )
-
-        if weekly:
-            x_limits = (-0.5, max(len(series), 8) - 0.5)
-        else:
-            x_limits = (
-                mdates.date2num(start) - 0.5,
-                mdates.date2num(end) + 0.5,
-            )
-        top = max(10, max(values, default=0) * 1.15)
-        if trend_values:
-            top = max(top, max(trend_values) * 1.15)
-        gradient = np.linspace(0, 1, 256).reshape(-1, 1)
-        gloss = LinearSegmentedColormap.from_list(
-            "marathon_bar_gloss",
-            [theme.ACCENT, theme.BAR_GLOSS],
+        y_label = {
+            "Activities": "Activities",
+            "Kilometers": "Kilometers",
+            "Time": "Hours",
+        }[metric]
+        self._style_axes(
+            f"{self.chart_activity_filter.currentText()} · {metric}",
+            y_label,
         )
-        for index, bar in enumerate(bars):
-            in_progress = weekly and dates[index] == current_monday
-            if in_progress:
-                bar.set_edgecolor(theme.ACCENT)
-                bar.set_linestyle("--")
-            if bar.get_height() <= 0:
-                continue
-            x, y = bar.get_xy()
-            image = self.chart_axes.imshow(
-                gradient,
-                cmap=gloss,
-                origin="lower",
-                aspect="auto",
-                extent=(x, x + bar.get_width(), y, y + bar.get_height()),
-                interpolation="bicubic",
-                zorder=bar.get_zorder(),
-            )
-            image.set_clip_path(bar)
-            bar.set_facecolor("none")
-        self.chart_axes.set_xlim(x_limits)
-        self.chart_axes.set_ylim(0, top)
-
-        if weekly:
-            label_step = _weekly_label_step(len(dates))
-            tick_positions = positions[::label_step]
-            self.chart_axes.set_xticks(
-                tick_positions,
-                [_format_day(dates[index]) for index in tick_positions],
-            )
-        else:
-            monday_count = sum(1 for day in dates if day.weekday() == 0)
-            if monday_count:
-                self.chart_axes.xaxis.set_major_locator(
-                    mdates.WeekdayLocator(
-                        byweekday=mdates.MO,
-                        interval=_daily_tick_interval(monday_count),
-                    )
-                )
-            else:
-                self.chart_axes.xaxis.set_major_locator(mdates.DayLocator())
-            self.chart_axes.xaxis.set_major_formatter(
-                FuncFormatter(
-                    lambda value, _position: _format_day(
-                        mdates.num2date(value).date()
-                    )
-                )
-            )
-        self._style_axes(title, "Kilometers", rotate_x_labels=not weekly)
-
         self.chart_figure.tight_layout()
         self.chart_canvas.draw()
-
-    def _on_start_date_changed(self, _date: QDate) -> None:
-        del _date
-        self.chart_to_edit.setMinimumDate(self.chart_from_edit.date())
-        self._refresh_chart(list(self._activities_by_id.values()))
-
-    def _on_chart_controls_changed(self, *_values: object) -> None:
-        del _values
-        self._refresh_chart(list(self._activities_by_id.values()))
 
     def _style_axes(
         self,
         title: str,
         ylabel: str,
-        *,
-        rotate_x_labels: bool = True,
     ) -> None:
         self.chart_axes.set_title(title, color=theme.TEXT)
         self.chart_axes.set_ylabel(ylabel, color=theme.TEXT)
-        self.chart_axes.tick_params(
-            axis="x",
-            colors=theme.MUTED_TEXT,
-            rotation=45 if rotate_x_labels else 0,
-        )
+        self.chart_axes.tick_params(axis="x", colors=theme.MUTED_TEXT)
         self.chart_axes.tick_params(axis="y", colors=theme.MUTED_TEXT)
         self.chart_axes.grid(axis="y", color=theme.GRID, alpha=0.5)
         self.chart_axes.set_axisbelow(True)

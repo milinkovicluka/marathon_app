@@ -2,6 +2,10 @@ import atexit
 import tempfile
 from pathlib import Path
 
+from PySide6.QtCore import QDate, QPoint, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import QCalendarWidget, QToolButton
+
 BACKGROUND = "#12141C"
 SURFACE = "#1B1F2B"
 SURFACE_RAISED = "#252A38"
@@ -51,6 +55,90 @@ def _create_check_icon() -> Path:
             f"</svg>"
         )
         return Path(icon_file.name)
+
+
+class ThemedCalendarWidget(QCalendarWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setVerticalHeaderFormat(
+            QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader
+        )
+
+    def date_color(self, day: QDate) -> QColor:
+        if day.year() != self.yearShown() or day.month() != self.monthShown():
+            return QColor(MUTED_TEXT)
+        if day.dayOfWeek() in (6, 7):
+            return QColor(ACCENT)
+        return QColor(TEXT)
+
+    def paintCell(self, painter: QPainter, rect: QRect, day: QDate) -> None:
+        painter.save()
+        selected = day == self.selectedDate()
+        painter.fillRect(rect, QColor(BLUE if selected else SURFACE))
+
+        if day == QDate.currentDate():
+            painter.setPen(QPen(QColor(ACCENT), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(rect.adjusted(3, 3, -3, -3))
+
+        text_color = QColor(TEXT) if selected else self.date_color(day)
+        painter.setPen(text_color)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(day.day()))
+        painter.restore()
+
+
+def _calendar_arrow_icon(direction: int) -> QIcon:
+    pixmap = QPixmap(18, 18)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(
+        QPen(
+            QColor("#FFFFFF"),
+            2,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+        )
+    )
+    center = 9
+    if direction < 0:
+        points = (QPoint(11, 4), QPoint(6, center), QPoint(11, 14))
+    else:
+        points = (QPoint(7, 4), QPoint(12, center), QPoint(7, 14))
+    for start, end in zip(points, points[1:]):
+        painter.drawLine(start, end)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def style_calendar(calendar: ThemedCalendarWidget) -> None:
+    calendar.setStyleSheet(
+        f"""
+        QCalendarWidget {{
+            background-color: {SURFACE};
+            color: {TEXT};
+        }}
+        QCalendarWidget QToolButton {{
+            color: #FFFFFF;
+            background-color: {SURFACE};
+        }}
+        QCalendarWidget QMenu {{
+            color: {TEXT};
+            background-color: {SURFACE_RAISED};
+        }}
+        """
+    )
+    for button_name, direction in (
+        ("qt_calendar_prevmonth", -1),
+        ("qt_calendar_nextmonth", 1),
+        ("qt_calendar_prevyear", -1),
+        ("qt_calendar_nextyear", 1),
+    ):
+        button = calendar.findChild(QToolButton, button_name)
+        if button is not None:
+            button.setText("")
+            button.setIcon(_calendar_arrow_icon(direction))
+            button.setIconSize(QSize(14, 14))
 
 
 _ARROW_ICON_PATH = _create_arrow_icon()
@@ -150,6 +238,11 @@ def build_stylesheet() -> str:
         }}
         QPushButton:pressed {{
             background-color: {BORDER};
+        }}
+        QPushButton:checked {{
+            background-color: {SURFACE};
+            border-color: {ACCENT};
+            color: {ACCENT};
         }}
         QPushButton:disabled {{
             color: {MUTED_TEXT};
