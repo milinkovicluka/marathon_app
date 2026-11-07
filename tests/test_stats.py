@@ -151,3 +151,23 @@ def test_average_pace_none_without_runs():
 def test_average_pace_ignores_runs_without_distance():
     runs = [act(date(2026, 11, 2), 10, 50), act(date(2026, 11, 3), 0, 30)]
     assert average_pace(runs) == timedelta(minutes=5)
+
+
+def test_rest_days_are_not_counted_as_activities_unless_filtered():
+    entries = [
+        act(date(2026, 11, 2), 0, 0, type="rest"),
+        act(date(2026, 11, 3), 7.4, 38),
+        act(date(2026, 11, 3), 0, 90, type="gym"),
+    ]
+    kwargs = dict(
+        start=date(2026, 11, 2),
+        end=date(2026, 11, 8),
+        period="4 Weeks",
+        metric="Activities",
+    )
+    assert progress_series(entries, **kwargs, activity_type="all") == [
+        (date(2026, 11, 2), 2)
+    ]
+    assert progress_series(entries, **kwargs, activity_type="rest") == [
+        (date(2026, 11, 2), 1)
+    ]

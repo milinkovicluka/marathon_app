@@ -292,3 +292,84 @@ def test_calendar_does_not_show_week_numbers(window):
         calendar.verticalHeaderFormat()
         == calendar.VerticalHeaderFormat.NoVerticalHeader
     )
+
+
+def test_tab_from_date_goes_to_type_even_with_macos_focus_rules(window, app):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    focus_flags = window.type_combo.focusPolicy().value
+    assert focus_flags & Qt.FocusPolicy.StrongFocus.value == Qt.FocusPolicy.StrongFocus.value
+
+    window.date_edit.setFocus()
+    window.date_edit.select_section(2)
+    QTest.keyClick(window.date_edit, Qt.Key.Key_Tab)
+    app.processEvents()
+    assert app.focusWidget() is window.type_combo
+
+
+def _fill_interval_run(window):
+    from PySide6.QtCore import QTime
+
+    window.type_combo.setCurrentText("run")
+    window.distance_spin.setValue(9.6)
+    window.duration_edit.setTime(QTime(0, 46, 0))
+    for km, minutes, seconds in ((2, 4, 0), (1, 3, 50)):
+        window.segment_distance_spin.setValue(km)
+        window.segment_pace_edit.setTime(QTime(0, minutes, seconds))
+        window._add_segment()
+
+
+def test_segments_are_added_saved_shown_and_loaded_for_edit(window):
+    _fill_interval_run(window)
+    assert window.segment_list.count() == 2
+    assert window.segment_list.item(0).text() == "2 km @ 4:00"
+
+    window._on_save()
+
+    [saved] = window.storage.list_activities()
+    assert [segment.distance_km for segment in saved.segments] == [2, 1]
+    assert window.activity_table.horizontalHeaderItem(5).text() == "Segments"
+    assert window.activity_table.item(0, 5).text() == "2 km @ 4:00 · 1 km @ 3:50"
+    assert window.segment_list.count() == 0
+
+    window._edit_row(0)
+    assert window.segment_list.count() == 2
+    window.segment_list.setCurrentRow(0)
+    window._remove_segment()
+    window._on_save()
+    assert [
+        segment.distance_km for segment in window.storage.list_activities()[0].segments
+    ] == [1]
+
+
+def test_segments_editor_is_hidden_and_ignored_for_gym(window):
+    _fill_interval_run(window)
+    window.type_combo.setCurrentText("gym")
+    assert window.segment_editor.isHidden()
+
+    window._on_save()
+
+    [saved] = window.storage.list_activities()
+    assert saved.type == "gym"
+    assert saved.segments == ()
+
+
+def test_empty_segment_is_rejected_with_a_message(window, monkeypatch):
+    warnings = []
+    monkeypatch.setattr(
+        "ui.main_window.QMessageBox.warning",
+        lambda *args: warnings.append(args[2]),
+    )
+    window._add_segment()
+    assert warnings and window.segment_list.count() == 0
+
+
+def test_sport_is_offered_in_form_and_chart_filter(window):
+    form_types = [window.type_combo.itemText(i) for i in range(window.type_combo.count())]
+    assert form_types == ["run", "bike", "gym", "sport", "rest"]
+    filter_types = [
+        window.chart_activity_filter.itemData(i) or window.chart_activity_filter.itemText(i)
+        for i in range(window.chart_activity_filter.count())
+    ]
+    assert "sport" in filter_types

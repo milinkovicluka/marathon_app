@@ -98,7 +98,15 @@ def progress_series(
             if bucket_start <= activity.date <= bucket_end
         ]
         if metric == "Activities":
-            value = float(len(bucket_activities))
+            # A rest day is logged as an entry but is not an activity, unless
+            # the chart is filtered to rest days on purpose.
+            value = float(
+                sum(
+                    1
+                    for activity in bucket_activities
+                    if activity_type == "rest" or activity.type != "rest"
+                )
+            )
         elif metric == "Kilometers":
             value = sum(
                 activity.distance_km for activity in bucket_activities

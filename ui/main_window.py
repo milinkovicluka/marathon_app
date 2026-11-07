@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QAbstractSpinBox,
@@ -29,8 +31,14 @@ from PySide6.QtWidgets import (
 )
 
 from core.countdown import RACE_START_TIME, format_countdown, time_until_race
-from core.formatting import format_duration, format_pace
-from core.models import ACTIVITY_TYPES, Activity, ActivityType
+from core.formatting import format_duration, format_pace, format_segments
+from core.models import (
+    ACTIVITY_TYPES,
+    SEGMENT_TYPES,
+    Activity,
+    ActivityType,
+    Segment,
+)
 from core.stats import (
     ProgressMetric,
     ProgressPeriod,
@@ -229,6 +237,8 @@ class MainWindow(QMainWindow):
 
         self.type_combo = QComboBox(self)
         self.type_combo.addItems(ACTIVITY_TYPES)
+        # macOS gives combo boxes Tab focus only with full keyboard access on.
+        self.type_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         form_layout.addRow("Type", self.type_combo)
 
         self.distance_spin = QDoubleSpinBox(self)
@@ -250,6 +260,60 @@ class MainWindow(QMainWindow):
         )
         form_layout.addRow("Duration", self.duration_edit)
 
+        self._segments: list[Segment] = []
+        self.segment_distance_spin = QDoubleSpinBox(self)
+        self.segment_distance_spin.setRange(0, 100)
+        self.segment_distance_spin.setSingleStep(0.1)
+        self.segment_distance_spin.setLocale(QLocale.c())
+        self.segment_distance_spin.setSuffix(" km")
+        self.segment_distance_spin.setMinimumSize(100, 40)
+        self.segment_distance_spin.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.NoButtons
+        )
+        self.segment_pace_edit = QTimeEdit(self)
+        self.segment_pace_edit.setDisplayFormat("m:ss")
+        self.segment_pace_edit.setTime(QTime(0, 0))
+        self.segment_pace_edit.setMinimumSize(80, 40)
+        self.segment_pace_edit.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.NoButtons
+        )
+        self.add_segment_button = QPushButton("Add", self)
+        self.add_segment_button.setMinimumWidth(80)
+        self.add_segment_button.clicked.connect(self._add_segment)
+        self.remove_segment_button = QPushButton("Remove", self)
+        self.remove_segment_button.setMinimumWidth(90)
+        self.remove_segment_button.setEnabled(False)
+        self.remove_segment_button.clicked.connect(self._remove_segment)
+        segment_inputs = QHBoxLayout()
+        segment_inputs.addWidget(self.segment_distance_spin)
+        segment_inputs.addWidget(QLabel("@", self))
+        segment_inputs.addWidget(self.segment_pace_edit)
+        segment_inputs.addWidget(QLabel("/km", self))
+        segment_inputs.addWidget(self.add_segment_button)
+        segment_inputs.addWidget(self.remove_segment_button)
+        segment_inputs.addStretch(1)
+        self.segment_list = QListWidget(self)
+        self.segment_list.setObjectName("segmentList")
+        self.segment_list.setFlow(QListWidget.Flow.LeftToRight)
+        self.segment_list.setWrapping(True)
+        self.segment_list.setSpacing(4)
+        self.segment_list.setFixedHeight(44)
+        self.segment_list.itemSelectionChanged.connect(
+            self._update_segment_buttons
+        )
+        self.segment_editor = QWidget(self)
+        self.segment_editor.setObjectName("segmentEditor")
+        segment_editor_layout = QVBoxLayout(self.segment_editor)
+        segment_editor_layout.setContentsMargins(0, 0, 0, 0)
+        segment_editor_layout.addLayout(segment_inputs)
+        segment_editor_layout.addWidget(self.segment_list)
+        form_layout.addRow("Segments", self.segment_editor)
+        self._form_layout = form_layout
+        self.type_combo.currentTextChanged.connect(
+            self._update_segment_editor
+        )
+        self._update_segment_buttons()
+
         self.notes_edit = QLineEdit(self)
         form_layout.addRow("Notes", self.notes_edit)
 
@@ -269,6 +333,7 @@ class MainWindow(QMainWindow):
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
         )
         form_card_layout.addLayout(form_layout)
+        form_card_layout.addStretch(1)
         cards_layout.addWidget(form_card, 3)
 
         summary_card = QFrame(log_tab)
@@ -289,9 +354,9 @@ class MainWindow(QMainWindow):
         cards_layout.addWidget(summary_card, 2)
         log_layout.addLayout(cards_layout)
 
-        self.activity_table = QTableWidget(0, 6, self)
+        self.activity_table = QTableWidget(0, 7, self)
         self.activity_table.setHorizontalHeaderLabels(
-            ["Date", "Type", "Distance", "Duration", "Pace", "Notes"]
+            ["Date", "Type", "Distance", "Duration", "Pace", "Segments", "Notes"]
         )
         self.activity_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
@@ -306,7 +371,7 @@ class MainWindow(QMainWindow):
         )
         table_header = self.activity_table.horizontalHeader()
         table_header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        table_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        table_header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         for column in (2, 3, 4):
             header_item = self.activity_table.horizontalHeaderItem(column)
             if header_item is not None:
@@ -381,6 +446,7 @@ class MainWindow(QMainWindow):
                 QTableWidgetItem(f"{activity.distance_km:.1f} km"),
                 QTableWidgetItem(format_duration(activity.duration)),
                 QTableWidgetItem(format_pace(activity.pace)),
+                QTableWidgetItem(format_segments(activity.segments)),
                 QTableWidgetItem(activity.notes),
             ]
             if activity.id is not None:
@@ -568,6 +634,11 @@ class MainWindow(QMainWindow):
                 duration=timedelta(seconds=duration_seconds),
                 notes=self.notes_edit.text(),
                 id=self._editing_id,
+                segments=(
+                    tuple(self._segments)
+                    if self.type_combo.currentText() in SEGMENT_TYPES
+                    else ()
+                ),
             )
         except ValueError as error:
             QMessageBox.warning(self, "Can't save", str(error))
@@ -604,8 +675,49 @@ class MainWindow(QMainWindow):
             QTime(0, 0).addSecs(int(activity.duration.total_seconds()))
         )
         self.notes_edit.setText(activity.notes)
+        self._set_segments(list(activity.segments))
         self.save_button.setText("Update")
         self.cancel_button.show()
+
+    def _set_segments(self, segments: list[Segment]) -> None:
+        self._segments = segments
+        self.segment_list.clear()
+        for segment in segments:
+            self.segment_list.addItem(QListWidgetItem(format_segments([segment])))
+        self.segment_distance_spin.setValue(0)
+        self.segment_pace_edit.setTime(QTime(0, 0))
+        self._update_segment_buttons()
+
+    def _add_segment(self) -> None:
+        pace_seconds = QTime(0, 0).secsTo(self.segment_pace_edit.time())
+        try:
+            segment = Segment.from_pace(
+                self.segment_distance_spin.value(),
+                timedelta(seconds=pace_seconds),
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, "Can't add segment", str(error))
+            return
+        self._set_segments([*self._segments, segment])
+        self.segment_distance_spin.setFocus()
+
+    def _remove_segment(self) -> None:
+        row = self.segment_list.currentRow()
+        if 0 <= row < len(self._segments):
+            self._set_segments(
+                [s for index, s in enumerate(self._segments) if index != row]
+            )
+
+    def _update_segment_buttons(self) -> None:
+        self.remove_segment_button.setEnabled(
+            bool(self.segment_list.selectedItems())
+        )
+        self.segment_list.setVisible(bool(self._segments))
+
+    def _update_segment_editor(self, activity_type: str) -> None:
+        self._form_layout.setRowVisible(
+            self.segment_editor, activity_type in SEGMENT_TYPES
+        )
 
     def _cancel_edit(self) -> None:
         self._reset_form()
@@ -617,6 +729,7 @@ class MainWindow(QMainWindow):
         self.distance_spin.setValue(0)
         self.duration_edit.setTime(QTime(0, 0))
         self.notes_edit.clear()
+        self._set_segments([])
         self.save_button.setText("Save")
         self.cancel_button.hide()
 

@@ -70,3 +70,61 @@ def test_update_missing_activity_raises(store):
 def test_data_survives_reopen(tmp_path):
     Storage(tmp_path / "test.db").add(make_run())
     assert len(Storage(tmp_path / "test.db").list_activities()) == 1
+
+def _interval_run() -> Activity:
+    from core.models import Segment
+
+    return Activity(
+        date=date(2026, 11, 5),
+        type="run",
+        distance_km=9.6,
+        duration=timedelta(minutes=46),
+        notes="intervals",
+        segments=(
+            Segment.from_pace(2, timedelta(minutes=4)),
+            Segment.from_pace(1, timedelta(minutes=3, seconds=50)),
+        ),
+    )
+
+
+def test_segments_are_saved_in_order_and_listed_back(store):
+    saved = store.add(_interval_run())
+    assert store.list_activities() == [saved]
+    assert [segment.distance_km for segment in saved.segments] == [2, 1]
+
+
+def test_update_replaces_segments_and_delete_removes_them(store):
+    from dataclasses import replace
+
+    saved = store.add(_interval_run())
+    store.update(replace(saved, segments=saved.segments[:1]))
+    assert store.list_activities()[0].segments == saved.segments[:1]
+
+    store.delete(saved.id)
+    other = store.add(make_run())
+    assert store.list_activities() == [other]
+    assert other.segments == ()
+
+
+def test_existing_database_without_segments_table_still_loads(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE activities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL, type TEXT NOT NULL,
+                distance_km REAL NOT NULL,
+                duration_microseconds INTEGER NOT NULL, notes TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO activities (date, type, distance_km, duration_microseconds, notes)"
+            " VALUES ('2026-11-01', 'run', 17.0, 4974000000, 'long run')"
+        )
+    [activity] = Storage(path).list_activities()
+    assert activity.distance_km == 17.0
+    assert activity.segments == ()

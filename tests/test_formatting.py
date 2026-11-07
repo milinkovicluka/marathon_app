@@ -21,3 +21,16 @@ def test_format_duration():
 
 def test_format_duration_under_an_hour():
     assert format_duration(timedelta(minutes=55)) == "0:55:00"
+
+
+def test_format_segments():
+    from core.formatting import format_segments
+    from core.models import Segment
+
+    assert format_segments(
+        [
+            Segment.from_pace(2, timedelta(minutes=4)),
+            Segment.from_pace(0.4, timedelta(minutes=3, seconds=50)),
+        ]
+    ) == "2 km @ 4:00 · 0.4 km @ 3:50"
+    assert format_segments([]) == ""

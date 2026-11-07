@@ -336,6 +336,25 @@ def build_stylesheet() -> str:
             border: 1px solid {BORDER};
             padding: 5px;
         }}
+        QWidget#segmentEditor {{
+            background: transparent;
+        }}
+        QListWidget#segmentList {{
+            background: transparent;
+            border: none;
+            outline: none;
+        }}
+        QListWidget#segmentList::item {{
+            background-color: {SURFACE_RAISED};
+            color: {TEXT};
+            border: 1px solid {BORDER};
+            border-radius: 12px;
+            padding: 3px 12px;
+        }}
+        QListWidget#segmentList::item:selected {{
+            border-color: {ACCENT};
+            color: {ACCENT};
+        }}
         QFrame#DashboardCard {{
             background-color: {SURFACE};
             border: 1px solid {BORDER};

@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Generator, cast
 
-from core.models import Activity, ActivityType
+from core.models import Activity, ActivityType, Segment
 
 
 class Storage:
@@ -24,11 +24,46 @@ class Storage:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS segments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    activity_id INTEGER NOT NULL REFERENCES activities(id),
+                    position INTEGER NOT NULL,
+                    distance_km REAL NOT NULL,
+                    duration_microseconds INTEGER NOT NULL
+                )
+                """
+            )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
             yield connection
+
+    @staticmethod
+    def _write_segments(
+        connection: sqlite3.Connection, activity_id: int, activity: Activity
+    ) -> None:
+        connection.execute(
+            "DELETE FROM segments WHERE activity_id = ?", (activity_id,)
+        )
+        connection.executemany(
+            """
+            INSERT INTO segments (
+                activity_id, position, distance_km, duration_microseconds
+            ) VALUES (?, ?, ?, ?)
+            """,
+            [
+                (
+                    activity_id,
+                    position,
+                    segment.distance_km,
+                    segment.duration // timedelta(microseconds=1),
+                )
+                for position, segment in enumerate(activity.segments)
+            ],
+        )
 
     def add(self, activity: Activity) -> Activity:
         with self._connect() as connection:
@@ -48,6 +83,7 @@ class Storage:
             )
             if cursor.lastrowid is None:
                 raise RuntimeError("SQLite did not return an activity id")
+            self._write_segments(connection, cursor.lastrowid, activity)
             saved_activity = replace(activity, id=cursor.lastrowid)
         return saved_activity
 
@@ -60,6 +96,22 @@ class Storage:
                 ORDER BY date DESC, id DESC
                 """
             ).fetchall()
+            segment_rows = connection.execute(
+                """
+                SELECT activity_id, distance_km, duration_microseconds
+                FROM segments
+                ORDER BY activity_id, position
+                """
+            ).fetchall()
+
+        segments_by_activity: dict[int, list[Segment]] = {}
+        for activity_id, distance_km, duration_microseconds in segment_rows:
+            segments_by_activity.setdefault(activity_id, []).append(
+                Segment(
+                    distance_km=distance_km,
+                    duration=timedelta(microseconds=duration_microseconds),
+                )
+            )
 
         return [
             Activity(
@@ -69,6 +121,7 @@ class Storage:
                 distance_km=row[3],
                 duration=timedelta(microseconds=row[4]),
                 notes=row[5],
+                segments=tuple(segments_by_activity.get(row[0], ())),
             )
             for row in rows
         ]
@@ -96,9 +149,13 @@ class Storage:
             )
             if cursor.rowcount == 0:
                 raise LookupError(f"activity with id {activity.id} does not exist")
+            self._write_segments(connection, activity.id, activity)
 
     def delete(self, activity_id: int) -> None:
         with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM segments WHERE activity_id = ?", (activity_id,)
+            )
             cursor = connection.execute(
                 "DELETE FROM activities WHERE id = ?",
                 (activity_id,),
