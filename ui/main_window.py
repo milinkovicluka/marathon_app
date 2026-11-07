@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QComboBox,
-    QDateEdit,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -42,6 +41,7 @@ from core.stats import (
 )
 from core.storage import Storage
 from ui import theme
+from ui.date_edit import SegmentedDateEdit
 
 
 def _format_day(day: date, *, with_weekday: bool = False) -> str:
@@ -219,7 +219,7 @@ class MainWindow(QMainWindow):
         form_layout.setLabelAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        self.date_edit = QDateEdit(QDate.currentDate(), self)
+        self.date_edit = SegmentedDateEdit(QDate.currentDate(), self)
         self.date_edit.setDisplayFormat("ddd d MMM")
         self.date_edit.setMaximumDate(QDate.currentDate())
         self.date_edit.setCalendarPopup(True)
