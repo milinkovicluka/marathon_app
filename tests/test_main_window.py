@@ -521,3 +521,46 @@ def test_strava_sync_error_is_shown_in_status(strava_window, app, tmp_path, monk
     _wait_for_strava(main_window, app)
     assert warnings == ["Can't reach Strava: offline"]
     main_window.close()
+
+
+def test_plugged_in_watch_is_imported_in_background(app, tmp_path, monkeypatch):
+    import time
+
+    from core.fit_import import ImportResult
+    from core.models import Activity
+
+    volumes = tmp_path / "Volumes"
+    (volumes / "GARMIN" / "GARMIN" / "ACTIVITY").mkdir(parents=True)
+    calls = []
+
+    def fake_import(storage, activity_dir, progress):
+        calls.append(activity_dir)
+        progress(0, 1)
+        result = ImportResult()
+        result.imported.append(storage.add(Activity(
+            date=date(2026, 11, 12), type="run", distance_km=6,
+            duration=timedelta(minutes=30), source_id="start:2026-11-12T07:00:00+00:00",
+        )))
+        return result
+
+    monkeypatch.setattr("ui.main_window.import_from_watch", fake_import)
+    main_window = MainWindow(Storage(tmp_path / "test.db"), watch_volumes=volumes)
+    main_window.start_watch_import()
+    deadline = time.monotonic() + 5
+    while main_window._watch_job is not None or not calls:
+        assert time.monotonic() < deadline
+        app.processEvents()
+        main_window._check_watch()
+        time.sleep(0.01)
+
+    assert main_window.activity_table.rowCount() == 1
+    assert main_window.watch_status.text().startswith("Watch: 1 new")
+
+    # Still plugged in: not imported again until it is unplugged and back.
+    main_window._check_watch()
+    assert len(calls) == 1
+    main_window.close()
+
+
+def test_watch_status_hidden_without_volumes(window):
+    assert window.watch_status.isHidden()

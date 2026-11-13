@@ -50,6 +50,13 @@ class Storage:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS device_files (
+                    file_key TEXT PRIMARY KEY
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE UNIQUE INDEX IF NOT EXISTS activities_source_id
                 ON activities(source_id) WHERE source_id IS NOT NULL
                 """
@@ -181,6 +188,21 @@ class Storage:
                 "SELECT 1 FROM activities WHERE source_id = ?", (source_id,)
             ).fetchone()
         return row is not None
+
+    def has_device_file(self, file_key: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM device_files WHERE file_key = ?", (file_key,)
+            ).fetchone()
+        return row is not None
+
+    def mark_device_file(self, file_key: str) -> None:
+        """Remember a watch file as read, so it is not decoded again."""
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO device_files (file_key) VALUES (?)",
+                (file_key,),
+            )
 
     def delete(self, activity_id: int) -> None:
         with self._connect() as connection:

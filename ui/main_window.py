@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from core import strava
 from core.fit_import import ImportResult, import_files
+from core.watch_import import find_watch_activity_dirs, import_from_watch
 from core.countdown import RACE_START_TIME, format_countdown, time_until_race
 from core.formatting import format_duration, format_pace, format_segments
 from core.models import (
@@ -103,7 +104,10 @@ def _progress_period_bounds(
 
 class MainWindow(QMainWindow):
     def __init__(
-        self, storage: Storage, strava_settings_path: Path | None = None
+        self,
+        storage: Storage,
+        strava_settings_path: Path | None = None,
+        watch_volumes: Path | None = None,
     ) -> None:
         super().__init__()
         self.storage = storage
@@ -425,8 +429,21 @@ class MainWindow(QMainWindow):
         self.strava_button.setVisible(strava_settings_path is not None)
         self.strava_status.setVisible(strava_settings_path is not None)
         self._update_strava_button()
+        # Watching for a plugged-in Garmin watch is only on when the app is
+        # given the folder where disks appear (/Volumes on a Mac).
+        self._watch_volumes = watch_volumes
+        self._watch_dirs_seen: set[Path] = set()
+        self._watch_job: Future | None = None
+        self._watch_progress = (0, 0)
+        self.watch_status = QLabel(self)
+        self.watch_status.setObjectName("weekDetails")
+        self.watch_status.setVisible(watch_volumes is not None)
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setInterval(500)
+        self._watch_timer.timeout.connect(self._check_watch)
         delete_row = QHBoxLayout()
         delete_row.addWidget(self.import_button)
+        delete_row.addWidget(self.watch_status)
         delete_row.addWidget(self.strava_button)
         delete_row.addWidget(self.strava_status)
         delete_row.addStretch(1)
@@ -788,6 +805,65 @@ class MainWindow(QMainWindow):
         for path, error in result.failed:
             lines.append(f"Couldn't read {path.name}: {error}")
         return "\n".join(lines)
+
+    def start_watch_import(self) -> None:
+        """Import from a Garmin watch now and whenever one is plugged in."""
+        if self._watch_volumes is not None:
+            self.watch_status.setText("Plug in your watch to import")
+            self._check_watch()
+            self._watch_timer.start()
+
+    def _check_watch(self) -> None:
+        assert self._watch_volumes is not None
+        job = self._watch_job
+        if job is not None:
+            if not job.done():
+                done, total = self._watch_progress
+                self.watch_status.setText(f"Watch: reading {done}/{total}…")
+                return
+            self._watch_job = None
+            self._finish_watch_import(job)
+
+        # Checking for the disk every few seconds is enough.
+        self._watch_timer.setInterval(3000)
+        mounted = set(find_watch_activity_dirs(self._watch_volumes))
+        new_dirs = sorted(mounted - self._watch_dirs_seen)
+        self._watch_dirs_seen &= mounted  # forget unplugged watches
+        if not new_dirs:
+            return
+        self._watch_dirs_seen.add(new_dirs[0])
+        self._watch_progress = (0, 0)
+        self.watch_status.setText("Watch: looking for new workouts…")
+
+        def progress(done: int, total: int) -> None:
+            self._watch_progress = (done, total)
+
+        future: Future = Future()
+        activity_dir = new_dirs[0]
+
+        def work() -> None:
+            try:
+                future.set_result(import_from_watch(self.storage, activity_dir, progress))
+            except BaseException as error:  # reported on the UI thread
+                future.set_exception(error)
+
+        threading.Thread(target=work, daemon=True).start()
+        self._watch_job = future
+        self._watch_timer.setInterval(500)
+
+    def _finish_watch_import(self, job: Future) -> None:
+        error = job.exception()
+        if error is not None:
+            self.watch_status.setText("Watch: import failed")
+            QMessageBox.warning(self, "Watch import", str(error))
+            return
+        result = job.result()
+        self._reload()
+        self.watch_status.setText(
+            f"Watch: {len(result.imported)} new · {datetime.now():%H:%M}"
+        )
+        if result.possible_duplicates or result.failed:
+            QMessageBox.information(self, "Watch import", self._import_summary(result))
 
     def start_strava_auto_sync(self) -> None:
         if self._strava_settings.connected:
