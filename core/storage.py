@@ -35,6 +35,18 @@ class Storage:
                 )
                 """
             )
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(activities)")
+            }
+            if "source_id" not in columns:
+                connection.execute("ALTER TABLE activities ADD COLUMN source_id TEXT")
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS activities_source_id
+                ON activities(source_id) WHERE source_id IS NOT NULL
+                """
+            )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -70,8 +82,9 @@ class Storage:
             cursor = connection.execute(
                 """
                 INSERT INTO activities (
-                    date, type, distance_km, duration_microseconds, notes
-                ) VALUES (?, ?, ?, ?, ?)
+                    date, type, distance_km, duration_microseconds, notes,
+                    source_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     activity.date.isoformat(),
@@ -79,6 +92,7 @@ class Storage:
                     activity.distance_km,
                     activity.duration // timedelta(microseconds=1),
                     activity.notes,
+                    activity.source_id,
                 ),
             )
             if cursor.lastrowid is None:
@@ -91,7 +105,8 @@ class Storage:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, date, type, distance_km, duration_microseconds, notes
+                SELECT id, date, type, distance_km, duration_microseconds, notes,
+                    source_id
                 FROM activities
                 ORDER BY date DESC, id DESC
                 """
@@ -122,6 +137,7 @@ class Storage:
                 duration=timedelta(microseconds=row[4]),
                 notes=row[5],
                 segments=tuple(segments_by_activity.get(row[0], ())),
+                source_id=row[6],
             )
             for row in rows
         ]
@@ -135,7 +151,7 @@ class Storage:
                 """
                 UPDATE activities
                 SET date = ?, type = ?, distance_km = ?,
-                    duration_microseconds = ?, notes = ?
+                    duration_microseconds = ?, notes = ?, source_id = ?
                 WHERE id = ?
                 """,
                 (
@@ -144,12 +160,20 @@ class Storage:
                     activity.distance_km,
                     activity.duration // timedelta(microseconds=1),
                     activity.notes,
+                    activity.source_id,
                     activity.id,
                 ),
             )
             if cursor.rowcount == 0:
                 raise LookupError(f"activity with id {activity.id} does not exist")
             self._write_segments(connection, activity.id, activity)
+
+    def has_source(self, source_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM activities WHERE source_id = ?", (source_id,)
+            ).fetchone()
+        return row is not None
 
     def delete(self, activity_id: int) -> None:
         with self._connect() as connection:

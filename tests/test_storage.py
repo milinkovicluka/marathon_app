@@ -128,3 +128,22 @@ def test_existing_database_without_segments_table_still_loads(tmp_path):
     [activity] = Storage(path).list_activities()
     assert activity.distance_km == 17.0
     assert activity.segments == ()
+
+
+def test_source_id_is_saved_and_found(store):
+    from dataclasses import replace
+
+    saved = store.add(replace(make_run(), source_id="fit:2026-11-07T06:56:44+00:00"))
+    assert store.has_source("fit:2026-11-07T06:56:44+00:00")
+    assert not store.has_source("fit:other")
+    assert store.list_activities()[0].source_id == saved.source_id
+
+
+def test_same_source_cannot_be_saved_twice(store):
+    import sqlite3
+    from dataclasses import replace
+
+    run = replace(make_run(), source_id="fit:x")
+    store.add(run)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.add(run)

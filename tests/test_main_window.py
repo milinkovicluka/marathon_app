@@ -373,3 +373,62 @@ def test_sport_is_offered_in_form_and_chart_filter(window):
         for i in range(window.chart_activity_filter.count())
     ]
     assert "sport" in filter_types
+
+
+def test_import_button_imports_chosen_files_and_reports(window, monkeypatch):
+    from core.fit_import import ImportResult
+    from core.models import Activity
+
+    imported = Activity(
+        date=date(2026, 11, 7),
+        type="run",
+        distance_km=8.66,
+        duration=timedelta(seconds=3445),
+        notes="Trail Run (Fenix 5)",
+        source_id="fit:2026-11-07T06:56:44+00:00",
+    )
+
+    def fake_import(storage, paths):
+        result = ImportResult()
+        result.imported.append(storage.add(imported))
+        result.already_imported.append(paths[0])
+        return result
+
+    messages = []
+    monkeypatch.setattr(
+        "ui.main_window.QFileDialog.getOpenFileNames",
+        lambda *args: (["/tmp/a.fit"], ""),
+    )
+    monkeypatch.setattr("ui.main_window.import_files", fake_import)
+    monkeypatch.setattr(
+        "ui.main_window.QMessageBox.information",
+        lambda *args: messages.append(args[2]),
+    )
+
+    window._import_fit()
+
+    assert window.activity_table.rowCount() == 1
+    assert window.activity_table.item(0, 6).text() == "Trail Run (Fenix 5)"
+    assert messages == ["Imported 1.\nSkipped 1 already imported."]
+
+
+def test_editing_imported_activity_keeps_its_source(window):
+    from core.models import Activity
+
+    window.storage.add(
+        Activity(
+            date=date(2026, 11, 7),
+            type="run",
+            distance_km=8.66,
+            duration=timedelta(seconds=3445),
+            source_id="fit:x",
+        )
+    )
+    window._reload()
+    window._edit_row(0)
+    window.notes_edit.setText("hills")
+    window._on_save()
+
+    [saved] = window.storage.list_activities()
+    assert saved.notes == "hills"
+    assert saved.source_id == "fit:x"

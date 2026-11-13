@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Literal
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.fit_import import import_files
 from core.countdown import RACE_START_TIME, format_countdown, time_until_race
 from core.formatting import format_duration, format_pace, format_segments
 from core.models import (
@@ -97,6 +100,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.storage = storage
         self._editing_id: int | None = None
+        self._editing_source_id: str | None = None
         self._activities_by_id: dict[int, Activity] = {}
         self._last_reload_date = date.today()
         self.setWindowTitle("Marathon App")
@@ -390,7 +394,11 @@ class MainWindow(QMainWindow):
             self._update_delete_button
         )
         self.delete_button.setEnabled(False)
+        self.import_button = QPushButton("Import FIT…", self)
+        self.import_button.setMinimumWidth(140)
+        self.import_button.clicked.connect(self._import_fit)
         delete_row = QHBoxLayout()
+        delete_row.addWidget(self.import_button)
         delete_row.addStretch(1)
         delete_row.addWidget(self.delete_button)
         log_layout.addLayout(delete_row)
@@ -634,6 +642,7 @@ class MainWindow(QMainWindow):
                 duration=timedelta(seconds=duration_seconds),
                 notes=self.notes_edit.text(),
                 id=self._editing_id,
+                source_id=self._editing_source_id,
                 segments=(
                     tuple(self._segments)
                     if self.type_combo.currentText() in SEGMENT_TYPES
@@ -668,6 +677,7 @@ class MainWindow(QMainWindow):
         activity = self._activities_by_id[activity_id]
 
         self._editing_id = activity.id
+        self._editing_source_id = activity.source_id
         self.date_edit.setDate(QDate(activity.date.year, activity.date.month, activity.date.day))
         self.type_combo.setCurrentText(activity.type)
         self.distance_spin.setValue(activity.distance_km)
@@ -719,11 +729,40 @@ class MainWindow(QMainWindow):
             self.segment_editor, activity_type in SEGMENT_TYPES
         )
 
+    def _import_fit(self) -> None:
+        paths, _filter = QFileDialog.getOpenFileNames(
+            self,
+            "Import Garmin activities",
+            str(Path.home() / "Downloads"),
+            "Garmin activities (*.fit *.zip)",
+        )
+        if not paths:
+            return
+        result = import_files(self.storage, paths)
+        self._reload()
+
+        lines = [f"Imported {len(result.imported)}."]
+        if result.already_imported:
+            lines.append(
+                f"Skipped {len(result.already_imported)} already imported."
+            )
+        for imported, logged in result.possible_duplicates:
+            lines.append(
+                f"{_format_day(imported.date, with_weekday=True)} "
+                f"{imported.type} {imported.distance_km:.1f} km may be the same "
+                f"workout as one you logged by hand ({logged.distance_km:.1f} km); "
+                "delete the one you don't want."
+            )
+        for path, error in result.failed:
+            lines.append(f"Couldn't read {path.name}: {error}")
+        QMessageBox.information(self, "Import FIT", "\n".join(lines))
+
     def _cancel_edit(self) -> None:
         self._reset_form()
 
     def _reset_form(self) -> None:
         self._editing_id = None
+        self._editing_source_id = None
         self.date_edit.setDate(QDate.currentDate())
         self.type_combo.setCurrentIndex(0)
         self.distance_spin.setValue(0)

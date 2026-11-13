@@ -41,6 +41,9 @@ class Activity:
     notes: str = ""
     id: int | None = None
     segments: tuple[Segment, ...] = field(default_factory=tuple)
+    # Where an imported activity came from, e.g. "fit:2026-11-07T06:56:44+00:00";
+    # used to skip a file that was already imported.
+    source_id: str | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.distance_km):
@@ -57,7 +60,8 @@ class Activity:
         if self.segments and self.type not in SEGMENT_TYPES:
             raise ValueError(f"{self.type} can't have segments")
         segment_km = sum(segment.distance_km for segment in self.segments)
-        if segment_km > self.distance_km + 1e-9:
+        # Half of the 0.01 km the form shows, so rounding never blocks a save.
+        if segment_km > self.distance_km + 0.005:
             raise ValueError(
                 f"segments add up to {segment_km:g} km, "
                 f"more than the {self.distance_km:g} km distance"
