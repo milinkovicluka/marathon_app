@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal, get_args
 
 ActivityType = Literal["run", "bike", "gym", "sport", "rest"]
@@ -8,6 +8,13 @@ ACTIVITY_TYPES = get_args(ActivityType)
 
 
 SEGMENT_TYPES = ("run", "bike")
+
+
+def start_source_id(start: datetime) -> str:
+    """Identify an imported workout by its start time in UTC."""
+    if start.tzinfo is None:
+        raise ValueError("start must be timezone-aware")
+    return f"start:{start.astimezone(timezone.utc).isoformat()}"
 
 
 @dataclass(frozen=True)
@@ -41,8 +48,9 @@ class Activity:
     notes: str = ""
     id: int | None = None
     segments: tuple[Segment, ...] = field(default_factory=tuple)
-    # Where an imported activity came from, e.g. "fit:2026-11-07T06:56:44+00:00";
-    # used to skip a file that was already imported.
+    # Start time of an imported workout, from start_source_id(); the same
+    # workout from a FIT file or from Strava gets the same id, so it is
+    # never imported twice.
     source_id: str | None = None
 
     def __post_init__(self) -> None:

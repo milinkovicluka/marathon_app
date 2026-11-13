@@ -133,8 +133,8 @@ def test_existing_database_without_segments_table_still_loads(tmp_path):
 def test_source_id_is_saved_and_found(store):
     from dataclasses import replace
 
-    saved = store.add(replace(make_run(), source_id="fit:2026-11-07T06:56:44+00:00"))
-    assert store.has_source("fit:2026-11-07T06:56:44+00:00")
+    saved = store.add(replace(make_run(), source_id="start:2026-11-07T06:56:44+00:00"))
+    assert store.has_source("start:2026-11-07T06:56:44+00:00")
     assert not store.has_source("fit:other")
     assert store.list_activities()[0].source_id == saved.source_id
 
@@ -147,3 +147,25 @@ def test_same_source_cannot_be_saved_twice(store):
     store.add(run)
     with pytest.raises(sqlite3.IntegrityError):
         store.add(run)
+
+
+def test_old_fit_source_ids_are_renamed_to_start_ids(tmp_path):
+    import sqlite3
+    from dataclasses import replace
+
+    path = tmp_path / "test.db"
+    Storage(path).add(replace(make_run(), source_id="fit:2026-11-07T06:56:44+00:00"))
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE activities SET source_id = 'fit:2026-11-07T06:56:44+00:00'")
+    assert Storage(path).has_source("start:2026-11-07T06:56:44+00:00")
+
+
+def test_start_source_id_is_the_same_for_any_time_zone():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from core.models import start_source_id
+
+    utc = datetime(2026, 11, 7, 6, 56, 44, tzinfo=timezone.utc)
+    assert start_source_id(utc) == start_source_id(utc.astimezone(ZoneInfo("Europe/Prague")))
+    assert start_source_id(utc) == "start:2026-11-07T06:56:44+00:00"

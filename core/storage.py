@@ -41,6 +41,13 @@ class Storage:
             }
             if "source_id" not in columns:
                 connection.execute("ALTER TABLE activities ADD COLUMN source_id TEXT")
+            # FIT imports used "fit:<start time>"; they now share "start:".
+            connection.execute(
+                """
+                UPDATE activities SET source_id = 'start:' || substr(source_id, 5)
+                WHERE source_id LIKE 'fit:%'
+                """
+            )
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS activities_source_id

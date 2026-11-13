@@ -1,11 +1,15 @@
-from datetime import date, timedelta
+import threading
+from concurrent.futures import Future
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from collections.abc import Callable
 from typing import Literal
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
-from PySide6.QtCore import QDate, QLocale, QSize, QTime, QTimer, Qt
+from PySide6.QtCore import QDate, QLocale, QSize, QTime, QTimer, QUrl, Qt
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -16,6 +20,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -32,7 +37,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.fit_import import import_files
+from core import strava
+from core.fit_import import ImportResult, import_files
 from core.countdown import RACE_START_TIME, format_countdown, time_until_race
 from core.formatting import format_duration, format_pace, format_segments
 from core.models import (
@@ -96,7 +102,9 @@ def _progress_period_bounds(
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, storage: Storage) -> None:
+    def __init__(
+        self, storage: Storage, strava_settings_path: Path | None = None
+    ) -> None:
         super().__init__()
         self.storage = storage
         self._editing_id: int | None = None
@@ -397,8 +405,30 @@ class MainWindow(QMainWindow):
         self.import_button = QPushButton("Import FIT…", self)
         self.import_button.setMinimumWidth(140)
         self.import_button.clicked.connect(self._import_fit)
+        # Strava is only offered when the app is given a settings file.
+        self._strava_path = strava_settings_path
+        self._strava_settings = (
+            strava.StravaSettings.load(strava_settings_path)
+            if strava_settings_path is not None
+            else strava.StravaSettings()
+        )
+        self._strava_job: Future | None = None
+        self._strava_job_is_manual = False
+        self._strava_poll = QTimer(self)
+        self._strava_poll.setInterval(200)
+        self._strava_poll.timeout.connect(self._check_strava_job)
+        self.strava_button = QPushButton(self)
+        self.strava_button.setMinimumWidth(150)
+        self.strava_button.clicked.connect(self._on_strava_button)
+        self.strava_status = QLabel(self)
+        self.strava_status.setObjectName("weekDetails")
+        self.strava_button.setVisible(strava_settings_path is not None)
+        self.strava_status.setVisible(strava_settings_path is not None)
+        self._update_strava_button()
         delete_row = QHBoxLayout()
         delete_row.addWidget(self.import_button)
+        delete_row.addWidget(self.strava_button)
+        delete_row.addWidget(self.strava_status)
         delete_row.addStretch(1)
         delete_row.addWidget(self.delete_button)
         log_layout.addLayout(delete_row)
@@ -740,7 +770,9 @@ class MainWindow(QMainWindow):
             return
         result = import_files(self.storage, paths)
         self._reload()
+        QMessageBox.information(self, "Import FIT", self._import_summary(result))
 
+    def _import_summary(self, result: ImportResult) -> str:
         lines = [f"Imported {len(result.imported)}."]
         if result.already_imported:
             lines.append(
@@ -755,7 +787,111 @@ class MainWindow(QMainWindow):
             )
         for path, error in result.failed:
             lines.append(f"Couldn't read {path.name}: {error}")
-        QMessageBox.information(self, "Import FIT", "\n".join(lines))
+        return "\n".join(lines)
+
+    def start_strava_auto_sync(self) -> None:
+        if self._strava_settings.connected:
+            self._run_strava_job(self._strava_sync_job, manual=False)
+
+    def _update_strava_button(self) -> None:
+        busy = self._strava_job is not None
+        self.strava_button.setEnabled(not busy)
+        self.strava_button.setText(
+            "Sync Strava" if self._strava_settings.connected else "Connect Strava"
+        )
+
+    def _on_strava_button(self) -> None:
+        if self._strava_settings.connected:
+            self._run_strava_job(self._strava_sync_job, manual=True)
+            return
+        settings = self._strava_settings
+        if not settings.has_app:
+            client_id, ok = QInputDialog.getText(
+                self,
+                "Connect Strava",
+                "Client ID of your Strava API app\n"
+                "(strava.com/settings/api, callback domain: localhost):",
+            )
+            if not ok or not client_id.strip():
+                return
+            secret, ok = QInputDialog.getText(
+                self,
+                "Connect Strava",
+                "Client Secret:",
+                QLineEdit.EchoMode.Password,
+            )
+            if not ok or not secret.strip():
+                return
+            settings.client_id = client_id.strip()
+            settings.client_secret = secret.strip()
+            self._save_strava_settings()
+        QDesktopServices.openUrl(QUrl(strava.authorize_url(settings.client_id)))
+        self._run_strava_job(
+            self._strava_connect_job,
+            manual=True,
+            status="Approve access in the browser…",
+        )
+
+    def _strava_connect_job(self) -> ImportResult:
+        code = strava.wait_for_code()
+        strava.exchange_code(self._strava_settings, code)
+        return self._strava_sync_job()
+
+    def _strava_sync_job(self) -> ImportResult:
+        try:
+            return strava.sync(self.storage, self._strava_settings)
+        finally:
+            self._save_strava_settings()
+
+    def _save_strava_settings(self) -> None:
+        if self._strava_path is not None:
+            self._strava_settings.save(self._strava_path)
+
+    def _run_strava_job(
+        self,
+        job: Callable[[], ImportResult],
+        *,
+        manual: bool,
+        status: str = "Syncing Strava…",
+    ) -> None:
+        if self._strava_job is not None:
+            return
+        self._strava_job_is_manual = manual
+        self.strava_status.setText(status)
+        future: Future = Future()
+
+        def work() -> None:
+            try:
+                future.set_result(job())
+            except BaseException as error:  # reported on the UI thread
+                future.set_exception(error)
+
+        # A daemon thread, so quitting never waits for Strava or the browser.
+        threading.Thread(target=work, daemon=True).start()
+        self._strava_job = future
+        self._update_strava_button()
+        self._strava_poll.start()
+
+    def _check_strava_job(self) -> None:
+        job = self._strava_job
+        if job is None or not job.done():
+            return
+        self._strava_poll.stop()
+        self._strava_job = None
+        self._update_strava_button()
+        error = job.exception()
+        if error is not None:
+            self.strava_status.setText("Strava: sync failed")
+            if self._strava_job_is_manual or not isinstance(error, strava.StravaError):
+                QMessageBox.warning(self, "Strava", str(error))
+            return
+        result = job.result()
+        self._reload()
+        self.strava_status.setText(
+            f"Strava: {len(result.imported)} new · {datetime.now():%H:%M}"
+        )
+        if self._strava_job_is_manual or result.possible_duplicates or result.failed:
+            QMessageBox.information(self, "Strava", self._import_summary(result))
 
     def _cancel_edit(self) -> None:
         self._reset_form()

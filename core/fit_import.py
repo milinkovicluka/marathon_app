@@ -10,7 +10,13 @@ from typing import Any
 
 from garmin_fit_sdk import Decoder, Stream
 
-from core.models import SEGMENT_TYPES, Activity, ActivityType, Segment
+from core.models import (
+    SEGMENT_TYPES,
+    Activity,
+    ActivityType,
+    Segment,
+    start_source_id,
+)
 from core.storage import Storage
 
 FitMessages = Mapping[str, Sequence[Mapping[str, Any]]]
@@ -106,7 +112,7 @@ def activity_from_messages(messages: FitMessages, local_zone: tzinfo | None = No
         duration=timedelta(seconds=round(session.get("total_timer_time") or 0)),
         notes=_activity_name(messages, session),
         segments=segments,
-        source_id=f"fit:{start.isoformat()}",
+        source_id=start_source_id(start),
     )
 
 
@@ -119,7 +125,7 @@ class ImportResult:
     possible_duplicates: list[tuple[Activity, Activity]] = field(default_factory=list)
 
 
-def _looks_like_same_workout(imported: Activity, logged: Activity) -> bool:
+def looks_like_same_workout(imported: Activity, logged: Activity) -> bool:
     if logged.source_id is not None:
         return False
     if (logged.date, logged.type) != (imported.date, imported.type):
@@ -151,6 +157,6 @@ def import_files(
                 result.possible_duplicates.extend(
                     (saved, logged)
                     for logged in existing
-                    if _looks_like_same_workout(saved, logged)
+                    if looks_like_same_workout(saved, logged)
                 )
     return result

@@ -385,7 +385,7 @@ def test_import_button_imports_chosen_files_and_reports(window, monkeypatch):
         distance_km=8.66,
         duration=timedelta(seconds=3445),
         notes="Trail Run (Fenix 5)",
-        source_id="fit:2026-11-07T06:56:44+00:00",
+        source_id="start:2026-11-07T06:56:44+00:00",
     )
 
     def fake_import(storage, paths):
@@ -432,3 +432,92 @@ def test_editing_imported_activity_keeps_its_source(window):
     [saved] = window.storage.list_activities()
     assert saved.notes == "hills"
     assert saved.source_id == "fit:x"
+
+
+def _wait_for_strava(window, app):
+    import time
+
+    deadline = time.monotonic() + 5
+    while window._strava_job is not None and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    window._check_strava_job()
+
+
+@pytest.fixture
+def strava_window(app, tmp_path):
+    main_window = MainWindow(Storage(tmp_path / "test.db"), tmp_path / "strava.json")
+    main_window.show()
+    yield main_window
+    main_window.close()
+
+
+def test_strava_is_hidden_without_settings_file(window):
+    assert window.strava_button.isHidden()
+
+
+def test_strava_button_offers_connect_until_connected(strava_window):
+    assert strava_window.strava_button.text() == "Connect Strava"
+
+
+def test_strava_sync_adds_activities_and_saves_progress(strava_window, app, tmp_path, monkeypatch):
+    from core import strava
+    from core.fit_import import ImportResult
+    from core.models import Activity
+
+    strava.StravaSettings(client_id="1", client_secret="s", refresh_token="r").save(
+        tmp_path / "strava.json"
+    )
+    main_window = MainWindow(Storage(tmp_path / "test.db"), tmp_path / "strava.json")
+    assert main_window.strava_button.text() == "Sync Strava"
+
+    def fake_sync(storage, settings):
+        settings.synced_until = 42
+        result = ImportResult()
+        result.imported.append(storage.add(Activity(
+            date=date(2026, 11, 12), type="run", distance_km=10,
+            duration=timedelta(minutes=50), notes="Lunch Run",
+            source_id="start:2026-11-12T11:00:00+00:00",
+        )))
+        return result
+
+    monkeypatch.setattr("ui.main_window.strava.sync", fake_sync)
+    messages = []
+    monkeypatch.setattr("ui.main_window.QMessageBox.information",
+                        lambda *args: messages.append(args[2]))
+
+    main_window.start_strava_auto_sync()
+    _wait_for_strava(main_window, app)
+
+    assert main_window.activity_table.rowCount() == 1
+    assert main_window.strava_status.text().startswith("Strava: 1 new")
+    assert messages == []  # automatic sync stays quiet when nothing needs attention
+    assert strava.StravaSettings.load(tmp_path / "strava.json").synced_until == 42
+    main_window.close()
+
+
+def test_strava_sync_error_is_shown_in_status(strava_window, app, tmp_path, monkeypatch):
+    from core import strava
+
+    strava.StravaSettings(client_id="1", client_secret="s", refresh_token="r").save(
+        tmp_path / "strava.json"
+    )
+    main_window = MainWindow(Storage(tmp_path / "test.db"), tmp_path / "strava.json")
+
+    def failing_sync(storage, settings):
+        raise strava.StravaError("Can't reach Strava: offline")
+
+    monkeypatch.setattr("ui.main_window.strava.sync", failing_sync)
+    warnings = []
+    monkeypatch.setattr("ui.main_window.QMessageBox.warning",
+                        lambda *args: warnings.append(args[2]))
+
+    main_window.start_strava_auto_sync()
+    _wait_for_strava(main_window, app)
+    assert main_window.strava_status.text() == "Strava: sync failed"
+    assert warnings == []  # offline at start-up is not worth a pop-up
+
+    main_window._on_strava_button()
+    _wait_for_strava(main_window, app)
+    assert warnings == ["Can't reach Strava: offline"]
+    main_window.close()

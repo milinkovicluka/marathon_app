@@ -48,7 +48,7 @@ def test_run_summary_uses_moving_time_and_local_date():
     assert activity.distance_km == pytest.approx(8.66464)
     assert activity.duration == timedelta(seconds=3445)
     assert activity.notes == "Trail Run (Fenix 5)"
-    assert activity.source_id == "fit:2026-11-07T06:56:44+00:00"
+    assert activity.source_id == "start:2026-11-07T06:56:44+00:00"
 
 
 def test_evening_run_in_utc_lands_on_local_day():
@@ -168,5 +168,5 @@ def test_hand_logged_entry_of_same_workout_is_flagged(tmp_path, monkeypatch):
     result = import_files(storage, [fit_file], PRAGUE)
 
     assert [(new.source_id, old.id) for new, old in result.possible_duplicates] == [
-        ("fit:2026-11-07T06:56:44+00:00", by_hand.id)
+        ("start:2026-11-07T06:56:44+00:00", by_hand.id)
     ]
